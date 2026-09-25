@@ -1,0 +1,103 @@
+# Release: pushing a tag builds the Windows executable, checks that it can open
+# its window, and attaches it to the GitHub release for that tag.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release and upload the asset
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+        shell: bash
+
+      - name: Check the tag matches the code
+        run: |
+          declared=$(python -c "import app; print(app.__version__)")
+          if [ "${GITHUB_REF_NAME#v}" != "$declared" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match app/__init__.py ($declared)"
+            exit 1
+          fi
+        shell: bash
+
+      - name: Test
+        run: python -m pytest
+        shell: bash
+
+      - name: Build
+        run: python -m PyInstaller --noconfirm --clean packaging/danfe_renamer.spec
+        shell: bash
+
+      # The packaged application is asked to open its window and report what it
+      # found. Shipping an .exe whose window cannot open has happened once
+      # already: the Tcl/Tk libraries were left out of the bundle and nothing
+      # noticed until a person double-clicked it.
+      - name: Verify the executable opens its window
+        run: |
+          ./dist/DANFE_Renamer.exe --diagnostics
+          cat danfe_renamer_diagnostics.txt
+          grep -q "application: DANFE Renamer" danfe_renamer_diagnostics.txt
+          grep -q "tkinter: Tk" danfe_renamer_diagnostics.txt
+          grep -q "window: opens" danfe_renamer_diagnostics.txt
+          grep -q "the window accepts drops" danfe_renamer_diagnostics.txt
+        shell: bash
+
+      - name: Name the asset and hash it
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cp dist/DANFE_Renamer.exe "dist/DANFE_Renamer_v${version}.exe"
+          sha256sum "dist/DANFE_Renamer_v${version}.exe" | tee sha256.txt
+          {
+            echo "### DANFE Renamer $version"
+            echo
+            echo '```'
+            cat sha256.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
+
+      - name: Compose the release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sha=$(cut -d' ' -f1 sha256.txt)
+          notes="packaging/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$notes" ]; then
+            sed "s/{sha256}/$sha/g" "$notes" > release-notes.md
+          else
+            printf 'DANFE Renamer %s\n\nSHA-256: `%s`\n' "$version" "$sha" > release-notes.md
+          fi
+          head -5 release-notes.md
+        shell: bash
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          asset="dist/DANFE_Renamer_v${version}.exe"
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$asset" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$asset" \
+              --title "DANFE Renamer $version" \
+              --notes-file release-notes.md \
+              --verify-tag
+          fi
+        shell: bash
