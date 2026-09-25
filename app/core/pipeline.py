@@ -123,6 +123,8 @@ def run_batch(
 
     batch_directory: Path | None = None
     written: dict[str, Path] = {}
+    #: Access key -> the file that first carried that note in this batch.
+    notes: dict[str, FileOutcome] = {}
     total = len(unique_sources)
 
     if copy_files:
@@ -137,6 +139,7 @@ def run_batch(
         analysis = analyze_file(source)
         outcome = analysis.outcome
 
+        outcome = _skip_duplicate_note(outcome, notes)
         if (
             copy_files
             and outcome.succeeded
@@ -152,6 +155,33 @@ def run_batch(
     if batch_directory is not None:
         summary.report_paths = write_reports(summary)
     return summary
+
+
+def _skip_duplicate_note(
+    outcome: FileOutcome, notes: dict[str, FileOutcome]
+) -> FileOutcome:
+    """Recognise a note that is already in this batch, whatever its file is called.
+
+    The same note is often present twice: the copy somebody already renamed and
+    the raw download. Both would produce the same file name, and reporting that
+    as a collision would suggest a data problem where there is none. The access
+    key tells the two apart from two genuinely different notes.
+    """
+    if not outcome.succeeded or not outcome.access_key:
+        return outcome
+    key = outcome.access_key.replace(" ", "")
+    first = notes.get(key)
+    if first is None:
+        notes[key] = outcome
+        return outcome
+    outcome.status = Status.SKIPPED
+    outcome.failure_code = FailureCode.DUPLICATE_NOTE
+    outcome.reason = (
+        "Same note as "
+        f"{first.source_path.name} (already renamed in this batch)"
+    )
+    outcome.destination_path = None
+    return outcome
 
 
 def _write_copy(

@@ -30,6 +30,7 @@ class FailureCode(str, Enum):
     TOTAL_VALUE_AMBIGUOUS = "TOTAL_VALUE_AMBIGUOUS"
     ISSUER_NOT_FOUND = "ISSUER_NOT_FOUND"
     INVALID_FILENAME = "INVALID_FILENAME"
+    DUPLICATE_NOTE = "DUPLICATE_NOTE"
     OUTPUT_COLLISION = "OUTPUT_COLLISION"
     OUTPUT_WRITE_ERROR = "OUTPUT_WRITE_ERROR"
     PDF_READ_ERROR = "PDF_READ_ERROR"
@@ -52,6 +53,7 @@ FAILURE_MESSAGES: dict[FailureCode, str] = {
     FailureCode.TOTAL_VALUE_AMBIGUOUS: "Total value is ambiguous or implausible",
     FailureCode.ISSUER_NOT_FOUND: "Issuer name could not be identified confidently",
     FailureCode.INVALID_FILENAME: "Generated filename is not usable on Windows",
+    FailureCode.DUPLICATE_NOTE: "This note is already in the batch under another name",
     FailureCode.OUTPUT_COLLISION: "Output filename already exists",
     FailureCode.OUTPUT_WRITE_ERROR: "Could not write the renamed copy",
     FailureCode.PDF_READ_ERROR: "PDF could not be read",

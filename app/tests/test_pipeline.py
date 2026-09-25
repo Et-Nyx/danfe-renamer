@@ -71,9 +71,10 @@ def test_dry_run_writes_nothing(tmp_path):
     assert list(tmp_path.rglob("*.pdf")) == [source]
 
 
-def test_two_sources_with_the_same_name_collide_without_overwriting(tmp_path):
-    first = _make_danfe(tmp_path / "a" / "nota.pdf")
-    second = _make_danfe(tmp_path / "b" / "outra.pdf")
+def test_two_different_notes_with_the_same_name_are_reported_as_a_collision(tmp_path):
+    """Same number, issuer, date and value in two series: both want one name."""
+    first = _make_danfe(tmp_path / "a" / "nota.pdf", series="001")
+    second = _make_danfe(tmp_path / "b" / "outra.pdf", series="002", control="987654321")
 
     summary = run_batch([first, second], tmp_path / "out")
 
@@ -87,6 +88,43 @@ def test_two_sources_with_the_same_name_collide_without_overwriting(tmp_path):
     assert collisions[0].status is Status.SKIPPED
     assert summary.output_directory is not None
     assert (summary.output_directory / EXPECTED_NAME).read_bytes() == first.read_bytes()
+
+
+def test_the_same_note_twice_is_reported_as_duplicate_work(tmp_path):
+    """The same note often sits in a folder twice: renamed, and as downloaded.
+
+    That is not a collision between two notes; the access key says so, and the
+    report should say so too.
+    """
+    already_renamed = _make_danfe(tmp_path / "a" / "nota.pdf")
+    raw_download = _make_danfe(
+        tmp_path / "b" / "24260912345678000199550010000012341234567891.pdf"
+    )
+
+    summary = run_batch([already_renamed, raw_download], tmp_path / "out")
+
+    assert summary.succeeded == 1
+    assert summary.skipped == 1
+    duplicate = [
+        item for item in summary.outcomes if item.failure_code is FailureCode.DUPLICATE_NOTE
+    ]
+    assert len(duplicate) == 1
+    assert duplicate[0].source_path == raw_download
+    assert "nota.pdf" in (duplicate[0].reason or "")
+    assert not [
+        item for item in summary.outcomes if item.failure_code is FailureCode.OUTPUT_COLLISION
+    ]
+    assert summary.failures_by_code()[FailureCode.DUPLICATE_NOTE] == 1
+
+
+def test_duplicate_work_is_recognised_without_copying_too(tmp_path):
+    """A dry run reports the duplicate as well, because nothing is written."""
+    first = _make_danfe(tmp_path / "a" / "nota.pdf")
+    second = _make_danfe(tmp_path / "b" / "outra.pdf")
+    summary = run_batch([first, second], None, copy_files=False)
+    assert summary.succeeded == 1
+    assert summary.skipped == 1
+    assert summary.failures_by_code()[FailureCode.DUPLICATE_NOTE] == 1
 
 
 def test_mixed_batch_reports_every_file(tmp_path):

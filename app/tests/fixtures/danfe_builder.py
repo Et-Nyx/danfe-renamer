@@ -24,7 +24,14 @@ LINE = 9.0
 
 
 def make_access_key(
-    nf_number: str, *, year: int = 2026, month: int = 9, uf: str = "24", model: str = "55"
+    nf_number: str,
+    *,
+    year: int = 2026,
+    month: int = 9,
+    uf: str = "24",
+    model: str = "55",
+    series: str = "001",
+    control: str = "123456789",
 ) -> str:
     """Build a valid 44-digit key whose NF number is ``nf_number``."""
     from app.pdf.access_key import check_digit
@@ -36,9 +43,9 @@ def make_access_key(
         + f"{month:02d}"
         + issuer_cnpj
         + model
-        + "001"
+        + series
         + f"{int(nf_number):09d}"
-        + "123456789"
+        + control
     )
     return body + check_digit(body)
 
@@ -69,11 +76,15 @@ def write_danfe(
     date_label: str = "DATA DE EMISSÃO",
     total_label: str = "VALOR TOTAL DA NOTA",
     printed_nf_number: str | None = None,
+    series: str = "001",
+    control: str = "123456789",
     landscape: bool = False,
     extra_pages: int = 0,
 ):
     """Write a DANFE-like PDF and return its access key."""
-    key = key or make_access_key(nf_number, year=2026, month=9)
+    key = key or make_access_key(
+        nf_number, year=2026, month=9, series=series, control=control
+    )
     printed = printed_nf_number or nf_number
     path = _ensure_parent(path)
     document = pymupdf.open()
