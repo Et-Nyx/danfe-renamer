@@ -16,8 +16,12 @@ Example:
 16.09.2026_NF 1234 - Industria Exemplo Ltda - 1.234,56.pdf
 ```
 
+Ready to run, for Windows 10/11 (64-bit, no Python needed):
+[releases page](https://github.com/Et-Nyx/danfe-renamer/releases/latest).
+The rest of this file is how to build, run and check it from source.
+
 The implementation plan is kept with the documents on the machine that holds
-them; this file is how to build, run and check the result.
+them.
 
 ## Fields and where they come from
 
