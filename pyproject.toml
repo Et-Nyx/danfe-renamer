@@ -5,7 +5,7 @@
 
 [project]
 name = "danfe-renamer"
-version = "1.0.0"
+version = "1.0.1"
 description = "Local, offline renamer for NF-e/DANFE PDFs"
 requires-python = ">=3.11"
 license = { text = "GPL-3.0-or-later" }
