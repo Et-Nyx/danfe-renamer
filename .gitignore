@@ -17,3 +17,8 @@ dist/
 # Source data (confidential fiscal documents)
 /Notas_fiscais
 Notas_fiscais.zip
+
+# Local-only working notes and the documents they came from: these stay on the
+# machine that holds the invoices, never on the repository.
+/chat/
+/danfe_renamer_plan.md
