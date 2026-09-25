@@ -11,6 +11,7 @@ directory.
 
 from __future__ import annotations
 
+import gc
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -112,7 +113,52 @@ def run_batch(
 
     With ``copy_files=False`` the run only analyses and reports: no directory is
     created and nothing is written.
+
+    Cyclic garbage collection is paused for the duration of the batch; see
+    :func:`_pause_garbage_collection` for why that matters when a window runs the
+    batch on a worker thread.
     """
+    with _pause_garbage_collection():
+        return _run_batch(
+            sources,
+            output_root,
+            copy_files=copy_files,
+            progress=progress,
+            timestamp=timestamp,
+        )
+
+
+class _pause_garbage_collection:
+    """Stop the cyclic collector while a batch is being read.
+
+    Reading a PDF happens in whatever thread called us - in the window that is a
+    worker thread. The window's own thread keeps allocating (Tk), and either
+    thread collecting while the other is inside MuPDF takes the process down: it
+    is a hard crash, not an exception, because MuPDF is not thread-safe and the
+    collector walks objects from both threads. With the collector paused for the
+    length of the batch, neither thread collects; the library objects are closed
+    where they were made, and the memory a paused collector leaves behind is
+    bounded by one batch.
+    """
+
+    def __enter__(self) -> None:
+        self._was_enabled = gc.isenabled()
+        if self._was_enabled:
+            gc.disable()
+
+    def __exit__(self, *exc_info) -> None:
+        if self._was_enabled:
+            gc.enable()
+
+
+def _run_batch(
+    sources: Iterable[Path],
+    output_root: Path | None,
+    *,
+    copy_files: bool = True,
+    progress: ProgressCallback | None = None,
+    timestamp: datetime | None = None,
+) -> BatchSummary:
     started_at = timestamp or datetime.now()
     unique_sources = _deduplicate(sources)
     summary = BatchSummary(

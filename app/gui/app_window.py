@@ -69,20 +69,34 @@ def split_dropped_paths(data: str, splitter=None) -> list[Path]:
     return [Path(item) for item in items if item.strip()]
 
 
-def build_window() -> "RenamerWindow":
-    """Create the main window, with drag-and-drop when this machine supports it."""
-    root: tk.Tk
-    dnd_available = False
+def create_root() -> tk.Tk:
+    """Open the application's one Tk root, with drag-and-drop when possible.
+
+    A process should hold a single Tk root: Tcl does not take kindly to repeated
+    interpreter creation and destruction, so the root is created here and reused.
+    """
     if HAS_DND:
         try:
-            root = TkinterDnD.Tk()
-            dnd_available = bool(root.tk.call("package", "require", "tkdnd"))
+            return TkinterDnD.Tk()
         except tk.TclError:  # pragma: no cover - Tk present but tkdnd missing
-            root = tk.Tk()
-            dnd_available = False
-    else:  # pragma: no cover - exercised through monkeypatching
-        root = tk.Tk()
-    return RenamerWindow(root, dnd_available=dnd_available)
+            return tk.Tk()
+    return tk.Tk()  # pragma: no cover - machine without tkinterdnd2
+
+
+def require_tkdnd(root: tk.Tk) -> bool:
+    """Whether a root can actually use tkdnd, asked of Tk itself."""
+    if not HAS_DND:
+        return False
+    try:
+        return bool(root.tk.call("package", "require", "tkdnd"))
+    except tk.TclError:  # pragma: no cover - tkdnd files missing from the build
+        return False
+
+
+def build_window() -> "RenamerWindow":
+    """Create the main window, with drag-and-drop when this machine supports it."""
+    root = create_root()
+    return RenamerWindow(root, dnd_available=require_tkdnd(root))
 
 
 class RenamerWindow:

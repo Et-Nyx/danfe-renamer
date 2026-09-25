@@ -108,21 +108,66 @@ def test_summary_text_is_in_the_selected_language():
     assert "VALOR TOTAL DA NOTA" in portuguese.failures[0][0]
 
 
-@pytest.fixture
-def window(monkeypatch, tmp_path):
-    """A real window, in a temporary settings directory."""
+@pytest.fixture(scope="session")
+def shared_root():
+    """The one Tk root for the whole test session.
+
+    Tcl does not survive having interpreters created and destroyed repeatedly, so
+    every window in this file is built on this root instead of making its own.
+    """
     tk = pytest.importorskip("tkinter")
-    monkeypatch.setattr(settings_module, "settings_directory", lambda: tmp_path)
-    from app.gui.app_window import build_window
+    from app.gui.app_window import create_root
 
     try:
-        built = build_window()
+        root = create_root()
     except tk.TclError as exc:  # pragma: no cover - no display available
         pytest.skip(f"Tk cannot start here: {exc}")
-    built.root.withdraw()
+    root.withdraw()
+    yield root
+    root.destroy()
+
+
+@pytest.fixture
+def window(shared_root, monkeypatch, tmp_path):
+    """A window on the shared root, in a temporary settings directory."""
+    monkeypatch.setattr(settings_module, "settings_directory", lambda: tmp_path)
+    from app.gui.app_window import RenamerWindow, require_tkdnd
+
+    built = RenamerWindow(shared_root, dnd_available=require_tkdnd(shared_root))
     yield built
     built._close_details()
-    built.root.destroy()
+
+
+def test_the_environment_report_has_the_facts_a_support_request_needs():
+    """No window is built here: one process, one Tk root.
+
+    The window probe is exercised by the release check, which runs the packaged
+    executable's --diagnostics in its own process.
+    """
+    from app.cli import collect_diagnostics
+
+    found = collect_diagnostics(probe_window=False)
+
+    assert found["application"].startswith("DANFE Renamer ")
+    assert found["tkinter"].startswith("Tk"), found["tkinter"]
+    assert found["pymupdf"] != "unknown"
+    assert "window" not in found, "the probe is opt-in"
+    if app_window.HAS_DND:  # pragma: no cover - depends on the machine
+        assert "drag_and_drop" not in found or "not installed" not in found["drag_and_drop"]
+    else:
+        assert "not installed" in found["drag_and_drop"]
+
+
+def test_diagnostics_are_written_to_a_file(tmp_path):
+    from app.cli import report_diagnostics
+
+    written = report_diagnostics(tmp_path, probe_window=False)
+
+    assert written == tmp_path / "danfe_renamer_diagnostics.txt"
+    text = written.read_text(encoding="utf-8")
+    assert "application: DANFE Renamer" in text
+    assert "tkinter: Tk" in text
+    assert "drag_and_drop:" in text
 
 
 def test_window_starts_in_english_and_switches_language(window):
@@ -277,26 +322,35 @@ def test_dropping_a_folder_adds_its_pdfs(window, tmp_path):
     assert window.selection_label.cget("text") == "2 file(s) selected"
 
 
-def test_window_says_when_dropping_is_not_available(monkeypatch, tmp_path):
+def test_window_says_when_dropping_is_not_available(shared_root, tmp_path, monkeypatch):
     """Without tkinterdnd2 the buttons still work and the hint tells the truth."""
     monkeypatch.setattr(settings_module, "settings_directory", lambda: tmp_path)
-    monkeypatch.setattr(app_window, "HAS_DND", False)
-    built = app_window.build_window()
-    built.root.withdraw()
+    window = app_window.RenamerWindow(shared_root, dnd_available=False)
     try:
-        built.root.update()
-        assert built.dnd_available is False
-        assert built.drop_hint_label.cget("text") == built.translate("drop_hint_buttons")
-        built.translate.set_language("pt")
-        built.root.update()
-        assert built.drop_hint_label.cget("text") == "Escolha os PDFs ou a pasta que deseja processar."
+        shared_root.update()
+        assert window.dnd_available is False
+        assert window.drop_hint_label.cget("text") == window.translate("drop_hint_buttons")
+        window.translate.set_language("pt")
+        shared_root.update()
+        assert (
+            window.drop_hint_label.cget("text")
+            == "Escolha os PDFs ou a pasta que deseja processar."
+        )
     finally:
-        built.root.destroy()
+        window._close_details()
 
 
-def test_window_offers_dropping_when_the_machine_supports_it(window):
+def test_the_window_offers_dropping_when_the_machine_supports_it(window):
     """On a machine with tkdnd the hint invites a drop and it is registered."""
     if not app_window.HAS_DND:  # pragma: no cover - machine without tkinterdnd2
         pytest.skip("tkinterdnd2 is not installed here")
     assert window.dnd_available is True
     assert window.drop_hint_label.cget("text") == window.translate("drop_hint")
+
+
+def test_a_root_reports_whether_it_can_use_tkdnd(shared_root):
+    """The decision the window makes comes from Tk, not from a guess."""
+    available = app_window.require_tkdnd(shared_root)
+    assert available is app_window.HAS_DND or available is False
+    if app_window.HAS_DND:
+        assert available is True

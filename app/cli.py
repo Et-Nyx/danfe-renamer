@@ -31,12 +31,15 @@ DEFAULT_OUTPUT_DIR_NAME = "DANFE_Renamed"
 DIAGNOSTICS_FILE_NAME = "danfe_renamer_diagnostics.txt"
 
 
-def collect_diagnostics() -> dict[str, str]:
+def collect_diagnostics(*, probe_window: bool = True) -> dict[str, str]:
     """Version and environment facts, deliberately free of document data.
 
     Read from a machine the application misbehaves on, this says which build ran
     and whether its optional pieces (Tk, drag-and-drop, the PDF library) were
-    usable there.
+    usable there. With ``probe_window`` the window is built for real, so a build
+    whose window cannot open says so here instead of by the person using it; it
+    appears briefly and is closed again. Tests skip that part: one process
+    should hold one Tk root, and the test process already has one.
     """
     import pymupdf
 
@@ -58,16 +61,26 @@ def collect_diagnostics() -> dict[str, str]:
 
     if not HAS_DND:
         found["drag_and_drop"] = "not installed (the window falls back to buttons)"
+    if not probe_window:
+        if HAS_DND:
+            found["drag_and_drop"] = "tkinterdnd2 is installed (the window reports it when built)"
         return found
-    try:
-        from tkinterdnd2 import TkinterDnD
 
-        root = TkinterDnD.Tk()
-        root.withdraw()
-        found["drag_and_drop"] = f"tkdnd {root.tk.call('package', 'require', 'tkdnd')}"
-        root.destroy()
-    except Exception as exc:  # pragma: no cover - machine without tkdnd
-        found["drag_and_drop"] = f"unavailable: {type(exc).__name__}: {exc}"
+    from .gui.app_window import build_window
+
+    try:
+        window = build_window()
+        window.root.withdraw()
+        window.root.update()
+        found["window"] = "opens"
+        if HAS_DND and window.dnd_available:
+            version = window.root.tk.call("package", "require", "tkdnd")
+            found["drag_and_drop"] = f"tkdnd {version}; the window accepts drops"
+        elif HAS_DND:
+            found["drag_and_drop"] = "tkdnd is installed but the drop target was refused"
+        window.root.destroy()
+    except Exception as exc:  # pragma: no cover - machine without a window
+        found["window"] = f"unavailable: {type(exc).__name__}: {exc}"
     return found
 
 
@@ -80,9 +93,11 @@ def _pymupdf_version(pymupdf) -> str:
     return ".".join(parts) or "unknown"
 
 
-def report_diagnostics(directory: Path | None = None) -> Path:
+def report_diagnostics(
+    directory: Path | None = None, *, probe_window: bool = True
+) -> Path:
     """Print the diagnostics and write the same lines to a file."""
-    found = collect_diagnostics()
+    found = collect_diagnostics(probe_window=probe_window)
     lines = [f"{name}: {value}" for name, value in found.items()]
     for line in lines:
         print(line)

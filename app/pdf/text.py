@@ -13,8 +13,9 @@ Three things make this layer worth its own module:
   rotated stub readable, but it also merges rows that merely touch (a label and
   the value printed just under it), so each line is split into stack-consistent
   segments - the rows a person sees;
-* coordinates stay in the page's own space; :class:`Frame` is how a caller asks
-  "what is to the right of this, and what is below it".
+* the library's own objects never leave this module and are closed in the thread
+  that created them (``app/core/pipeline.py`` explains why collections have to
+  stay out of that window).
 """
 
 from __future__ import annotations
@@ -257,7 +258,10 @@ def load_document(path: str | Path) -> Document:
     except Exception as exc:  # pragma: no cover - library specific messages
         raise PdfReadError(f"Could not read PDF text: {exc}") from exc
     finally:
+        # Close and drop the library's objects here, in the thread that made
+        # them; MuPDF is not thread-safe.
         raw.close()
+        del raw
 
     return Document(path=pdf_path, pages=tuple(pages), metadata=metadata)
 
