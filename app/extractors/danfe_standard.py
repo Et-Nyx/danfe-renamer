@@ -62,8 +62,18 @@ _PRINTED_NF_RE = re.compile(r"^\d{3}(?:\.\d{3}){1,2}$")
 #: Words that mark a printed NF number (``Nº.`` normalizes to ``N``).
 _NF_MARKERS = frozenset({"N", "NO", "NF", "NRO", "NUMERO"})
 
-#: How far below a date label its value may sit (the ERP variant leaves a gap).
-_DATE_VALUE_MAX_DISTANCE = 60.0
+#: How far below a label its value may sit.
+#:
+#: A DANFE prints a label and its value in the same cell, so the value sits right
+#: under the label: measured gaps in production are 0.3pt (grid layouts) to
+#: 7.4pt (the ERP variant), which is under one printed row. Staying inside the
+#: cell is what keeps the parser from grabbing a number from the next block: an
+#: empty cell must become a reported failure, never a guess.
+MAX_VALUE_DISTANCE = 12.0
+
+#: How far to the side of a label its value may start, because a value cell can
+#: be a little wider than the label printed above it.
+MAX_VALUE_SIDE_OFFSET = 25.0
 
 
 def _contains(tokens: tuple[str, ...], wanted: tuple[str, ...]) -> bool:
@@ -108,6 +118,32 @@ class _Read:
         if self.blocked is None:
             self.blocked = code
             self.blocked_detail = detail
+
+
+#: How far below a label its value may sit.
+#:
+#: A DANFE prints a label and its value in the same cell, so the value is right
+#: under the label (measured gaps in production are under 8pt). Staying tight is
+#: what keeps the parser from grabbing a number from a neighbouring or later
+#: row: an empty cell must become a reported failure, never a guess.
+MAX_VALUE_DISTANCE = 20.0
+
+#: How far to the side of the label a value may start (value cells can be wider
+#: than the label that sits above them).
+MAX_VALUE_SIDE_OFFSET = 25.0
+
+
+#: How far below a label its value may sit.
+#:
+#: A DANFE prints a label and its value in the same cell, so the value is right
+#: under the label (measured gaps in production are under 8pt). Staying tight is
+#: what keeps the parser from grabbing a number from a neighbouring or later
+#: row: an empty cell must become a reported failure, never a guess.
+MAX_VALUE_DISTANCE = 20.0
+
+#: How far to the side of the label a value may start (value cells can be wider
+#: than the label that sits above them).
+MAX_VALUE_SIDE_OFFSET = 25.0
 
 
 class DanfeStandardExtractor(DanfeExtractor):
@@ -291,7 +327,11 @@ def _read_emission_date(document: Document) -> _Read:
     values: list[str] = []
     for anchor in find_anchors(document, _DATE_LABELS):
         word = find_value_near(
-            document, anchor, looks_like_br_date, max_distance=_DATE_VALUE_MAX_DISTANCE
+            document,
+            anchor,
+            looks_like_br_date,
+            max_distance=MAX_VALUE_DISTANCE,
+            max_horizontal_offset=MAX_VALUE_SIDE_OFFSET,
         )
         if word is None:
             continue
@@ -348,7 +388,13 @@ def _resolved_values(document: Document, labels) -> list[str]:
     """Return the normalized amounts resolved for every label occurrence."""
     values: list[str] = []
     for anchor in find_anchors(document, labels):
-        word = find_value_near(document, anchor, is_plausible_money)
+        word = find_value_near(
+            document,
+            anchor,
+            is_plausible_money,
+            max_distance=MAX_VALUE_DISTANCE,
+            max_horizontal_offset=MAX_VALUE_SIDE_OFFSET,
+        )
         if word is None:
             continue
         amount = normalize_money(word.text)

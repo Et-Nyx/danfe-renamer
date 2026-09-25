@@ -36,12 +36,15 @@ RESERVED_NAMES = frozenset(
 def sanitize_component(text: str) -> str:
     """Make ``text`` safe as part of a Windows file name.
 
-    Invalid characters become ``-``, runs of whitespace collapse, and trailing
-    spaces/dots (which Windows silently strips) are removed.
+    Only what Windows cannot store is changed: forbidden characters become
+    ``-``, runs of forbidden characters collapse into one, runs of whitespace
+    become a single space, and leading/trailing spaces, dots and dashes (which
+    Windows strips or that would be read as separators) are removed. Letters,
+    accents, punctuation and the spacing of the document are kept.
     """
     cleaned = _UNSAFE_RE.sub("-", text)
+    cleaned = re.sub(r"-{2,}", "-", cleaned)
     cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
-    cleaned = re.sub(r"[-\s]{2,}", "-", cleaned)
     return cleaned.strip(" .-")
 
 
