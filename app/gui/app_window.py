@@ -4,6 +4,10 @@ The interface is deliberately thin: it collects input paths, runs
 :func:`app.core.pipeline.run_batch` on a worker thread, and shows the result.
 No extraction or filesystem decision is made here - the safety rules live in the
 pipeline, so the GUI cannot weaken them.
+
+Dropping files on the window is optional: :func:`build_window` uses
+``tkinterdnd2`` when the machine has it and falls back to plain Tkinter when it
+does not, so the window always opens and the buttons always work.
 """
 
 from __future__ import annotations
@@ -16,8 +20,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from ..cli import collect_sources, default_output_root
 from .. import __version__
+from ..cli import collect_sources, default_output_root
 from ..core.models import BatchSummary, FileOutcome, Status
 from ..core.pipeline import run_batch
 from .i18n import LANGUAGE_NAMES, Translator, summarise, translate_failure
@@ -37,17 +41,56 @@ except Exception:  # pragma: no cover
     HAS_DND = False
 
 
+class _DropEvent:
+    """Stand-in for a Tk drop event, used by tests."""
+
+    def __init__(self, data: str) -> None:
+        self.data = data
+
+
+def split_dropped_paths(data: str, splitter=None) -> list[Path]:
+    """Turn a drop's payload into paths.
+
+    Tk sends a Tcl list, which quotes whatever contains spaces or braces, so the
+    split is left to Tcl itself instead of being guessed at: this is where file
+    names with spaces arrive, and where a Windows path's backslashes would be
+    eaten by a hand-written parser. A payload that is not a well-formed Tcl list
+    is split on line breaks instead, so an odd source still produces paths rather
+    than an exception.
+    """
+    if not data or not data.strip():
+        return []
+    if splitter is None:
+        splitter = tk.Tcl().splitlist
+    try:
+        items = splitter(data)
+    except tk.TclError:
+        items = data.replace("\r", "\n").split("\n")
+    return [Path(item) for item in items if item.strip()]
+
+
 def build_window() -> "RenamerWindow":
-    """Create the main window, using drag-and-drop support when available."""
-    root = TkinterDnD.Tk() if HAS_DND else tk.Tk()
-    return RenamerWindow(root)
+    """Create the main window, with drag-and-drop when this machine supports it."""
+    root: tk.Tk
+    dnd_available = False
+    if HAS_DND:
+        try:
+            root = TkinterDnD.Tk()
+            dnd_available = bool(root.tk.call("package", "require", "tkdnd"))
+        except tk.TclError:  # pragma: no cover - Tk present but tkdnd missing
+            root = tk.Tk()
+            dnd_available = False
+    else:  # pragma: no cover - exercised through monkeypatching
+        root = tk.Tk()
+    return RenamerWindow(root, dnd_available=dnd_available)
 
 
 class RenamerWindow:
     """The one screen: choose files, process, read the result."""
 
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: tk.Tk, *, dnd_available: bool = False) -> None:
         self.root = root
+        self.dnd_available = dnd_available
         self.translate = Translator(load_language())
         self.selected: list[Path] = []
         self.summary: BatchSummary | None = None
@@ -109,7 +152,6 @@ class RenamerWindow:
         self.file_list.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         self._enable_drop_target()
-
         self.selection_label = ttk.Label(self.frame)
         self.selection_label.pack(fill="x")
 
@@ -147,7 +189,8 @@ class RenamerWindow:
         self._refresh_result_visibility()
 
     def _enable_drop_target(self) -> None:
-        if not HAS_DND:  # pragma: no cover - exercised only without the package
+        """Accept dropped files when the machine supports it; otherwise do nothing."""
+        if not self.dnd_available:  # pragma: no cover - needs a machine without tkdnd
             return
         try:
             self.file_list.drop_target_register(DND_FILES)
@@ -155,7 +198,25 @@ class RenamerWindow:
             self.root.drop_target_register(DND_FILES)
             self.root.dnd_bind("<<Drop>>", self._on_drop)
         except Exception:  # pragma: no cover - window without drop support
-            pass
+            self.dnd_available = False
+
+    def _drop_paths(self, data: str) -> list[Path]:
+        """Parse a drop payload and repair Tcl's brace escaping if it bit us.
+
+        Tcl keeps ``\\{`` inside a quoted element, so a path that really contains
+        braces arrives escaped. If the literal path does not exist and the
+        unescaped one does, the second is the file the person dropped.
+        """
+        paths = split_dropped_paths(data, self.root.tk.splitlist)
+        repaired: list[Path] = []
+        for path in paths:
+            text = str(path)
+            if not path.exists() and ("\\{" in text or "\\}" in text):
+                candidate = Path(text.replace("\\{", "{").replace("\\}", "}"))
+                if candidate.exists():
+                    path = candidate
+            repaired.append(path)
+        return repaired
 
     # -------------------------------------------------------------- language
 
@@ -165,7 +226,9 @@ class RenamerWindow:
         self.title_label.configure(text=t("headline"))
         self.subtitle_label.configure(text=t("subtitle"))
         self.language_label.configure(text=t("language_label"))
-        self.drop_hint_label.configure(text=t("drop_hint"))
+        self.drop_hint_label.configure(
+            text=t("drop_hint" if self.dnd_available else "drop_hint_buttons")
+        )
         self.choose_files_button.configure(text=t("choose_files"))
         self.choose_folder_button.configure(text=t("choose_folder"))
         self.remove_selected_button.configure(text=t("remove_selected"))
@@ -216,27 +279,9 @@ class RenamerWindow:
         self.selected.clear()
         self._refresh_selection()
 
-    def _on_drop(self, event) -> None:  # pragma: no cover - needs a real drop
-        raw = str(event.data)
-        paths: list[Path] = []
-        token = ""
-        inside_braces = False
-        for character in raw:
-            if character == "{":
-                inside_braces = True
-            elif character == "}":
-                inside_braces = False
-                paths.append(Path(token))
-                token = ""
-            elif character == " " and not inside_braces:
-                if token:
-                    paths.append(Path(token))
-                    token = ""
-            else:
-                token += character
-        if token:
-            paths.append(Path(token))
-        self._add_sources(paths)
+    def _on_drop(self, event) -> None:
+        """Handle a drop: the payload is a Tcl list of paths."""
+        self._add_sources(self._drop_paths(str(event.data)))
 
     def _add_sources(self, paths: list[Path]) -> None:
         excluded = []

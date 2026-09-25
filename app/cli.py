@@ -9,19 +9,87 @@ Batch from a folder, writing renamed copies next to it::
 Analysis only, no files written (used to measure a corpus)::
 
     python -m app.cli "C:/notas" --dry-run --report C:/tmp/reports --verbose
+
+Environment report, for a support request (no document data in it)::
+
+    python -m app.cli --diagnostics
 """
 
 from __future__ import annotations
 
 import argparse
+import platform
 import sys
 from pathlib import Path
 
+from . import __version__
 from .core.models import BatchSummary, Status
 from .core.pipeline import run_batch
 from .reporting.report import write_reports
 
 DEFAULT_OUTPUT_DIR_NAME = "DANFE_Renamed"
+DIAGNOSTICS_FILE_NAME = "danfe_renamer_diagnostics.txt"
+
+
+def collect_diagnostics() -> dict[str, str]:
+    """Version and environment facts, deliberately free of document data.
+
+    Read from a machine the application misbehaves on, this says which build ran
+    and whether its optional pieces (Tk, drag-and-drop, the PDF library) were
+    usable there.
+    """
+    import pymupdf
+
+    from .gui.app_window import HAS_DND
+
+    found: dict[str, str] = {
+        "application": f"DANFE Renamer {__version__}",
+        "python": sys.version.split()[0],
+        "operating_system": platform.platform(),
+        "packaged_executable": str(bool(getattr(sys, "frozen", False))),
+        "pymupdf": _pymupdf_version(pymupdf),
+    }
+    try:
+        import tkinter
+
+        found["tkinter"] = f"Tk {tkinter.TkVersion}"
+    except Exception as exc:  # pragma: no cover - broken Tk installation
+        found["tkinter"] = f"unavailable: {type(exc).__name__}: {exc}"
+
+    if not HAS_DND:
+        found["drag_and_drop"] = "not installed (the window falls back to buttons)"
+        return found
+    try:
+        from tkinterdnd2 import TkinterDnD
+
+        root = TkinterDnD.Tk()
+        root.withdraw()
+        found["drag_and_drop"] = f"tkdnd {root.tk.call('package', 'require', 'tkdnd')}"
+        root.destroy()
+    except Exception as exc:  # pragma: no cover - machine without tkdnd
+        found["drag_and_drop"] = f"unavailable: {type(exc).__name__}: {exc}"
+    return found
+
+
+def _pymupdf_version(pymupdf) -> str:
+    """The library's own version string, whichever attribute carries it."""
+    version = getattr(pymupdf, "__version__", None)
+    if isinstance(version, str) and version:
+        return version
+    parts = [str(part) for part in getattr(pymupdf, "version", ()) if part]
+    return ".".join(parts) or "unknown"
+
+
+def report_diagnostics(directory: Path | None = None) -> Path:
+    """Print the diagnostics and write the same lines to a file."""
+    found = collect_diagnostics()
+    lines = [f"{name}: {value}" for name, value in found.items()]
+    for line in lines:
+        print(line)
+    target = Path(directory or Path.cwd()) / DIAGNOSTICS_FILE_NAME
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"\nWritten to: {target}")
+    return target
 
 
 def collect_sources(paths: list[Path], excluded_dirs: list[Path]) -> list[Path]:
@@ -65,7 +133,11 @@ def build_parser() -> argparse.ArgumentParser:
         prog="danfe-renamer",
         description="Rename DANFE/NF-e PDFs into copies with the agreed name pattern.",
     )
-    parser.add_argument("sources", nargs="+", help="PDF files and/or folders")
+    parser.add_argument(
+        "sources",
+        nargs="*",
+        help="PDF files and/or folders (omit with --diagnostics)",
+    )
     parser.add_argument(
         "--output",
         help=f"root folder for the batch directory (default: <input>/{DEFAULT_OUTPUT_DIR_NAME})",
@@ -79,6 +151,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--report",
         help="folder to also write the report into (the batch folder gets one too)",
     )
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="report version and environment (Tk, drag-and-drop, PDF library), then exit",
+    )
     parser.add_argument("--limit", type=int, help="process at most N files")
     parser.add_argument(
         "--verbose", action="store_true", help="print one line per file"
@@ -88,6 +165,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.diagnostics:
+        report_diagnostics()
+        return 0
+    if not args.sources:
+        print("Nothing to do: give one or more PDF files or folders.", file=sys.stderr)
+        return 1
     excluded = [Path(args.output)] if args.output else []
     sources = collect_sources([Path(item) for item in args.sources], excluded)
     if args.limit:

@@ -1,0 +1,41 @@
+# Tests on every push and pull request: the suite needs no documents and no
+# display, so feedback arrives in about a minute.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        # The application runs on the interpreter PyInstaller bundles, so the
+        # floor of pyproject is worth testing as well.
+        python: ["3.11", "3.12"]
+        drag_and_drop: ["with", "without"]
+    name: python ${{ matrix.python }}, drag-and-drop ${{ matrix.drag_and_drop }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          if [ "${{ matrix.drag_and_drop }}" = "without" ]; then
+            python -m pip uninstall -y tkinterdnd2
+          fi
+        shell: bash
+
+      - name: Lint
+        run: python -m pyflakes app tools run_danfe_renamer.py
+
+      - name: Test
+        run: python -m pytest

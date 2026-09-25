@@ -1,2 +1,6 @@
-# Runtime dependency of the application.
+# Runtime dependencies of the application.
 pymupdf>=1.24,<2
+
+# Optional: lets the window accept dropped files. Without it the window still
+# opens and the buttons work, so it is not required to run from source.
+tkinterdnd2>=0.4

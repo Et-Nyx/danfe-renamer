@@ -15,6 +15,7 @@ import _tkinter
 from PyInstaller.depend.bindepend import get_imports
 from PyInstaller.utils.hooks import collect_submodules
 
+
 hidden_imports = [
     "tkinter",
     "tkinter.ttk",

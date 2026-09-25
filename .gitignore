@@ -10,6 +10,9 @@ __pycache__/
 .scratch/
 local_output/
 
+# Written by --diagnostics for a support request
+/danfe_renamer_diagnostics.txt
+
 # Packaging output
 build/
 dist/
