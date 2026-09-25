@@ -30,14 +30,18 @@ REPORT_FIELDS = (
 CSV_DELIMITER = ";"  # Excel in pt-BR opens semicolon-separated files directly.
 
 
-def write_reports(summary: BatchSummary) -> dict[str, Path]:
-    """Write every report next to the renamed files; return their paths."""
-    directory = summary.output_directory
-    if directory is None:
+def write_reports(summary: BatchSummary, directory: Path | None = None) -> dict[str, Path]:
+    """Write every report; ``directory`` defaults to the batch directory.
+
+    Returns the paths written, keyed ``csv``, ``json`` and ``html``.
+    """
+    target = Path(directory) if directory is not None else summary.output_directory
+    if target is None:
         return {}
-    csv_path = directory / "batch_report.csv"
-    json_path = directory / "batch_report.json"
-    html_path = directory / "batch_report.html"
+    target.mkdir(parents=True, exist_ok=True)
+    csv_path = target / "batch_report.csv"
+    json_path = target / "batch_report.json"
+    html_path = target / "batch_report.html"
     _write_csv(summary, csv_path)
     _write_json(summary, json_path)
     _write_html(summary, html_path)

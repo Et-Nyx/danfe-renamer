@@ -77,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--report",
-        help="folder to write the report into (used with --dry-run)",
+        help="folder to also write the report into (the batch folder gets one too)",
     )
     parser.add_argument("--limit", type=int, help="process at most N files")
     parser.add_argument(
@@ -105,13 +105,14 @@ def main(argv: list[str] | None = None) -> int:
         copy_files=not args.dry_run,
         progress=_progress_printer() if not args.verbose else None,
     )
+    extra_report_directory: Path | None = None
     if args.report:
-        report_dir = Path(args.report)
-        report_dir.mkdir(parents=True, exist_ok=True)
-        summary.output_directory = report_dir
-        summary.report_paths = write_reports(summary)
+        extra_report_directory = Path(args.report)
+        write_reports(summary, directory=extra_report_directory)
 
     print_summary(summary, verbose=args.verbose)
+    if extra_report_directory is not None:
+        print(f"Reports also written to: {extra_report_directory}")
     return 0 if summary.skipped == 0 and summary.errors == 0 else 1
 
 

@@ -1,0 +1,5 @@
+# Development-only tools (tests and packaging).
+-r requirements.txt
+pytest>=8
+pyflakes>=3
+pyinstaller>=6

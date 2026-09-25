@@ -15,9 +15,8 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable
 
-from ..extractors.registry import PARSERS
 from ..pdf.text import PdfReadError, load_document
 from ..reporting.report import write_reports
 from .detector import UnsupportedDocument, detect
@@ -233,8 +232,3 @@ def _join_key(digits: str | None) -> str | None:
     if not digits:
         return None
     return " ".join(digits[index : index + 4] for index in range(0, len(digits), 4))
-
-
-#: Parsers known to the running application; used by the GUI summary.
-def known_parsers() -> Sequence[str]:
-    return tuple(parser.parser_id for parser in PARSERS)
