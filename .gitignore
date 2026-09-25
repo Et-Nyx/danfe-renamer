@@ -1,2 +1,19 @@
+# Byte-compiled / caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Development virtual environment
+.venv/
+
+# Local scratch space for ad-hoc analysis
+.scratch/
+local_output/
+
+# Packaging output
+build/
+dist/
+
+# Source data (confidential fiscal documents)
 /Notas_fiscais
 Notas_fiscais.zip

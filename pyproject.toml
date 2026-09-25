@@ -1,0 +1,9 @@
+# DANFE/NF-e Local Renamer
+#
+# Development layout: the application package lives in app/, development-only
+# helpers (dataset inspection, corpus evaluation) live in tools/.
+
+[tool.pytest.ini_options]
+testpaths = ["app/tests"]
+pythonpath = ["."]
+addopts = "-q"
