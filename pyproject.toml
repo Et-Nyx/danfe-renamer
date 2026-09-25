@@ -3,6 +3,13 @@
 # Development layout: the application package lives in app/, development-only
 # helpers (dataset inspection, corpus evaluation) live in tools/.
 
+[project]
+name = "danfe-renamer"
+description = "Local, offline renamer for NF-e/DANFE PDFs"
+requires-python = ">=3.11"
+license = { text = "GPL-3.0-or-later" }
+dependencies = ["pymupdf>=1.24,<2"]
+
 [tool.pytest.ini_options]
 testpaths = ["app/tests"]
 pythonpath = ["."]

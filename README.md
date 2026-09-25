@@ -144,3 +144,12 @@ Rules that keep it trustworthy:
   never overwrite, stay inside the batch folder.
 - Adding a layout means adding a parser in `app/extractors/` and listing it in
   `registry.py`; nothing else changes.
+
+## License
+
+GPL-3.0-or-later: see [LICENSE](LICENSE). Copyright (C) 2026 Et-Nyx.
+
+You may use, study, share and modify this program, commercial use included, as
+long as derivative work is distributed under the same license with its source
+available. The packaged `DANFE_Renamer.exe` is distributed under the same terms,
+and the source it was built from is this repository.
