@@ -17,6 +17,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from ..cli import collect_sources, default_output_root
+from .. import __version__
 from ..core.models import BatchSummary, FileOutcome, Status
 from ..core.pipeline import run_batch
 from .i18n import LANGUAGE_NAMES, Translator, summarise, translate_failure
@@ -160,7 +161,7 @@ class RenamerWindow:
 
     def _apply_language(self) -> None:
         t = self.translate
-        self.root.title(t("window_title"))
+        self.root.title(f"{t('window_title')} {__version__}")
         self.title_label.configure(text=t("headline"))
         self.subtitle_label.configure(text=t("subtitle"))
         self.language_label.configure(text=t("language_label"))

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
+
 import pymupdf
 import pytest
 
+from app import __version__
 from app.core.detector import detect
 from app.core.models import FailureCode, Status
 from app.core.pipeline import analyze_file, run_batch
@@ -57,6 +60,11 @@ def test_batch_report_lists_the_agreed_columns(tmp_path):
         "warnings",
     ]
     assert EXPECTED_NAME in csv_text
+
+    payload = json.loads(summary.report_paths["json"].read_text(encoding="utf-8"))
+    assert payload["application_version"] == __version__
+    assert payload["totals"] == {"analyzed": 1, "renamed": 1, "skipped": 0, "errors": 0}
+    assert __version__ in summary.report_paths["html"].read_text(encoding="utf-8")
 
 
 def test_dry_run_writes_nothing(tmp_path):

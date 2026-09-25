@@ -10,6 +10,7 @@ import json
 from html import escape
 from pathlib import Path
 
+from .. import __version__
 from ..core.models import BatchSummary, FileOutcome, Status
 
 #: Column order of the CSV/JSON report, matching the agreed field list.
@@ -80,6 +81,8 @@ def _write_csv(summary: BatchSummary, path: Path) -> None:
 
 def _write_json(summary: BatchSummary, path: Path) -> None:
     payload = {
+        "application": "DANFE Renamer",
+        "application_version": __version__,
         "started_at": summary.started_at.isoformat(timespec="seconds"),
         "finished_at": summary.finished_at.isoformat(timespec="seconds"),
         "output_directory": str(summary.output_directory or ""),
@@ -120,6 +123,7 @@ def _write_html(summary: BatchSummary, path: Path) -> None:
         for code, count in failures.items()
     )
     document = _HTML_TEMPLATE.format(
+        version=escape(__version__),
         started=escape(summary.started_at.strftime("%d/%m/%Y %H:%M:%S")),
         finished=escape(summary.finished_at.strftime("%d/%m/%Y %H:%M:%S")),
         total=summary.total,
@@ -159,6 +163,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
 <h1>DANFE renamer — batch report</h1>
 <ul class="summary">
+ <li>DANFE Renamer {version}</li>
  <li>Started: {started}</li>
  <li>Finished: {finished}</li>
  <li>{total} files analyzed</li>

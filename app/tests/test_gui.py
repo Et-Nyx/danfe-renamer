@@ -123,12 +123,14 @@ def window(monkeypatch, tmp_path):
 
 
 def test_window_starts_in_english_and_switches_language(window):
-    assert window.root.title() == "DANFE Renamer"
+    from app import __version__
+
+    assert window.root.title() == f"DANFE Renamer {__version__}"
     assert window.process_button.cget("text") == "Process Files"
 
     window.translate.set_language("pt")
     window.root.update()
-    assert window.root.title() == "Renomeador de DANFE"
+    assert window.root.title() == f"Renomeador de DANFE {__version__}"
     assert window.process_button.cget("text") == "Processar arquivos"
     assert set(LANGUAGE_NAMES) == set(STRINGS)
 

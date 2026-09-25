@@ -33,6 +33,7 @@ exe = EXE(  # noqa: F821
     analysis.binaries,
     analysis.datas,
     name="DANFE_Renamer",
+    version="../packaging/version_info.txt",
     console=False,  # the user never sees a terminal
     disable_windowed_traceback=False,
     upx=False,
