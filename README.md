@@ -80,7 +80,8 @@ export PYTHONPATH=                      # see the note below, it matters
 
 Tests build their own DANFE-like PDFs with PyMuPDF
 (`app/tests/fixtures/danfe_builder.py`): real invoices are confidential and are
-never copied into the repository or into test output.
+never copied into the repository or into test output. Every company name, CNPJ,
+access key and amount in the tests and in the examples above is invented.
 
 ### Measuring against real documents
 

@@ -47,8 +47,8 @@ def test_format_br_date_is_the_filename_form():
 @pytest.mark.parametrize(
     "text, printed, number",
     [
-        ("1.234,56", "1.234,56", Decimal("4321.00")),
-        ("R$ 1.234,56", "1.234,56", Decimal("4321.00")),
+        ("1.234,56", "1.234,56", Decimal("1234.56")),
+        ("R$ 1.234,56", "1.234,56", Decimal("1234.56")),
         ("4321,00", "4321,00", Decimal("4321.00")),
         ("1.234.567,89", "1.234.567,89", Decimal("1234567.89")),
         ("0,00", "0,00", Decimal("0.00")),
