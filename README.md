@@ -16,8 +16,8 @@ Example:
 16.09.2026_NF 1234 - Industria Exemplo Ltda - 1.234,56.pdf
 ```
 
-The implementation plan lives in [danfe_renamer_plan.md](danfe_renamer_plan.md);
-this file is how to build, run and check the result.
+The implementation plan is kept with the documents on the machine that holds
+them; this file is how to build, run and check the result.
 
 ## Fields and where they come from
 
