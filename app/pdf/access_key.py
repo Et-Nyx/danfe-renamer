@@ -184,6 +184,8 @@ def _accumulate_key(
         line = lines[line_position]
         if line.direction != direction:
             return None
+        if collected and line.page_number != collected[0].page_number:
+            return None
         for word in line.words[word_position:]:
             if not _KEY_GROUP_RE.match(word.text):
                 return None
@@ -210,6 +212,8 @@ def _accumulate_key(
             return None
         continuation_line = lines[line_position]
         if not continuation_line.words or continuation_line.direction != direction:
+            return None
+        if continuation_line.page_number != collected[0].page_number:
             return None
         first_word = continuation_line.words[0]
         if not _KEY_GROUP_RE.match(first_word.text):

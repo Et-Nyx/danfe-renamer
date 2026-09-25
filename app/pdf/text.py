@@ -73,14 +73,17 @@ class PdfReadError(Exception):
 
 @dataclass(frozen=True)
 class Word:
-    """A single positioned word, in the page's own coordinates."""
+    """A single positioned word, in its own page's coordinates."""
 
     text: str
     x0: float
     y0: float
     x1: float
     y1: float
+    #: Global index of the row this word belongs to.
     line_index: int
+    #: Page this word is printed on; coordinates are only comparable inside it.
+    page_number: int
     #: Unit vector of the line's reading direction, e.g. ``(1.0, 0.0)``.
     direction: Direction
 
@@ -288,6 +291,7 @@ def _build_page(number: int, page: "pymupdf.Page", line_offset: int) -> Page:
                 x1=x1,
                 y1=y1,
                 line_index=index,
+                page_number=number,
                 direction=direction,
             )
             for x0, y0, x1, y1, text in sorted(

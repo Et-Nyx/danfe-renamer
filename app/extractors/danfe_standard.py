@@ -225,9 +225,11 @@ def _is_anchored(occurrence, anchors) -> bool:
     """Whether the key is printed in the key box, at or below a key label.
 
     A key printed elsewhere (``NF-e Ref.:`` in the additional data of a
-devolução) is not anchored and never becomes the document's own key.
+    devolução) is not anchored and never becomes the document's own key.
     """
     for anchor in anchors:
+        if occurrence.words[0].page_number != anchor.page_number:
+            continue
         if occurrence.words[0].direction != anchor.direction:
             continue
         if not 0 <= occurrence.first_line - anchor.line_index <= 6:
@@ -237,6 +239,7 @@ devolução) is not anchored and never becomes the document's own key.
         if key_frame.advance[1] >= anchor_frame.advance[0] - 60.0:
             return True
     return False
+
 
 
 def _read_printed_nf_number(document: Document) -> _Read:

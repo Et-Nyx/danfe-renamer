@@ -28,6 +28,7 @@ class Anchor:
     """One printed occurrence of a label."""
 
     line_index: int
+    page_number: int
     words: tuple[Word, ...]
     label: tuple[str, ...]
     direction: tuple[float, float]
@@ -54,6 +55,7 @@ def find_anchors(document: Document, variants: LabelVariants) -> tuple[Anchor, .
                 anchors.append(
                     Anchor(
                         line_index=line.index,
+                        page_number=line.page_number,
                         words=matched,
                         label=variant,
                         direction=line.direction,
@@ -78,7 +80,11 @@ def find_value_near(
     anchor_frame = anchor.frame
     best: tuple[float, Word] | None = None
     for word in document.words:
-        if word.direction != anchor.direction or not predicate(word.text):
+        if (
+            word.page_number != anchor.page_number
+            or word.direction != anchor.direction
+            or not predicate(word.text)
+        ):
             continue
         word_frame = word.frame(anchor.direction)
         if word.line_index == anchor.line_index:
@@ -106,7 +112,11 @@ def find_line_below(
     """Return the first text line inside the label's cell, below the label."""
     anchor_frame = anchor.frame
     for line in document.lines:
-        if line.index <= anchor.line_index or line.direction != anchor.direction:
+        if (
+            line.index <= anchor.line_index
+            or line.page_number != anchor.page_number
+            or line.direction != anchor.direction
+        ):
             continue
         line_frame = frame_of(line.words, anchor.direction)
         stack_gap = line_frame.stack[0] - anchor_frame.stack[1]
