@@ -22,10 +22,17 @@ from tkinter import filedialog, messagebox, ttk
 
 from .. import __version__
 from ..cli import collect_sources, default_output_root
-from ..core.models import BatchSummary, FileOutcome, Status
+from ..core.models import BatchSummary, FileOutcome, NameSource, Status
 from ..core.pipeline import run_batch
-from .i18n import LANGUAGE_NAMES, Translator, summarise, translate_failure
-from .settings import load_language, save_language
+from .i18n import (
+    LANGUAGE_NAMES,
+    NAME_SOURCE_KEYS,
+    Translator,
+    describe_name_source,
+    summarise,
+    translate_failure,
+)
+from .settings import load_language, load_name_source, save_language, save_name_source
 
 POLL_INTERVAL_MS = 80
 
@@ -109,6 +116,8 @@ class RenamerWindow:
         self.selected: list[Path] = []
         self.summary: BatchSummary | None = None
         self.details_window: tk.Toplevel | None = None
+        self.details_table: ttk.Treeview | None = None
+        self.detail_label: ttk.Label | None = None
         self._events: queue.Queue = queue.Queue()
         self._running = False
 
@@ -143,6 +152,8 @@ class RenamerWindow:
 
         self.subtitle_label = ttk.Label(self.frame, wraplength=640, justify="left")
         self.subtitle_label.pack(fill="x", pady=(6, 10))
+
+        self._build_name_source_selector()
 
         self.drop_hint_label = ttk.Label(self.frame, anchor="center", foreground="#555555")
         self.drop_hint_label.pack(fill="x", pady=(0, 6))
@@ -202,6 +213,28 @@ class RenamerWindow:
         self._refresh_selection()
         self._refresh_result_visibility()
 
+    def _build_name_source_selector(self) -> None:
+        """The one processing choice: which printed company names the files.
+
+        Both names are read from every document; this decides which of the two
+        the file name carries, and it is remembered for the next start.
+        """
+        options = ttk.Frame(self.frame)
+        options.pack(fill="x", pady=(0, 8))
+        self.name_source_label = ttk.Label(options)
+        self.name_source_label.pack(side="left", padx=(0, 10))
+        self.name_source_var = tk.StringVar(value=load_name_source().value)
+        self.name_source_buttons: dict[NameSource, ttk.Radiobutton] = {}
+        for source in (NameSource.EMITENTE, NameSource.RECIPIENT):
+            button = ttk.Radiobutton(
+                options,
+                variable=self.name_source_var,
+                value=source.value,
+                command=self._on_name_source_selected,
+            )
+            button.pack(side="left", padx=(0, 12))
+            self.name_source_buttons[source] = button
+
     def _enable_drop_target(self) -> None:
         """Accept dropped files when the machine supports it; otherwise do nothing."""
         if not self.dnd_available:  # pragma: no cover - needs a machine without tkdnd
@@ -240,6 +273,9 @@ class RenamerWindow:
         self.title_label.configure(text=t("headline"))
         self.subtitle_label.configure(text=t("subtitle"))
         self.language_label.configure(text=t("language_label"))
+        self.name_source_label.configure(text=t("name_source_label"))
+        for source, button in self.name_source_buttons.items():
+            button.configure(text=t(NAME_SOURCE_KEYS[source]))
         self.drop_hint_label.configure(
             text=t("drop_hint" if self.dnd_available else "drop_hint_buttons")
         )
@@ -269,6 +305,15 @@ class RenamerWindow:
                 self.translate.set_language(code)
                 save_language(code)
                 return
+
+    def _on_name_source_selected(self) -> None:
+        """Remember the choice straight away, so the next start keeps it."""
+        save_name_source(self.name_source)
+
+    @property
+    def name_source(self) -> NameSource:
+        """Which printed name the next batch puts into the file names."""
+        return NameSource(self.name_source_var.get())
 
     # ----------------------------------------------------------------- input
 
@@ -335,15 +380,26 @@ class RenamerWindow:
         self._refresh_result_visibility()
         sources = list(self.selected)
         output_root = default_output_root(sources)
+        # Read the choice here, on the Tk thread; the worker only gets the value.
+        name_source = self.name_source
         thread = threading.Thread(
-            target=self._run_batch, args=(sources, output_root), daemon=True
+            target=self._run_batch,
+            args=(sources, output_root, name_source),
+            daemon=True,
         )
         thread.start()
 
-    def _run_batch(self, sources: list[Path], output_root: Path) -> None:
+    def _run_batch(
+        self, sources: list[Path], output_root: Path, name_source: NameSource
+    ) -> None:
         """Worker thread: never touches Tk directly, only the queue."""
         try:
-            summary = run_batch(sources, output_root, progress=self._report_progress)
+            summary = run_batch(
+                sources,
+                output_root,
+                progress=self._report_progress,
+                name_source=name_source,
+            )
         except Exception as exc:  # pragma: no cover - unexpected failure
             self._events.put(("error", f"{type(exc).__name__}: {exc}"))
             return
@@ -466,6 +522,7 @@ class RenamerWindow:
         table = ttk.Treeview(
             window, columns=("status", "target", "reason"), show="headings"
         )
+        self.details_table = table
         table.heading("#0", text=t("column_source"))
         table.heading("status", text=t("column_status"))
         table.heading("target", text=t("column_target"))
@@ -497,6 +554,7 @@ class RenamerWindow:
         detail_box = ttk.LabelFrame(window, padding=10)
         detail_box.pack(fill="both", expand=False, side="bottom")
         detail_label = ttk.Label(detail_box, justify="left", anchor="w")
+        self.detail_label = detail_label
         detail_label.pack(fill="both")
         detail_label.configure(text=t("select_row_hint"))
 
@@ -507,7 +565,9 @@ class RenamerWindow:
                 f"{t('field_nf_number')}: {outcome.nf_number or '-'}",
                 f"{t('field_date')}: {outcome.emission_date or '-'}",
                 f"{t('field_value')}: {outcome.total_value or '-'}",
+                f"{t('name_source_label')}: {describe_name_source(outcome.name_source, t)}",
                 f"{t('field_issuer')}: {outcome.issuer or '-'}",
+                f"{t('field_recipient')}: {outcome.recipient or '-'}",
                 f"{t('field_destination')}: {outcome.destination_path or '-'}",
                 f"{t('field_duration')}: {t('seconds', value=outcome.duration_seconds)}",
             ]

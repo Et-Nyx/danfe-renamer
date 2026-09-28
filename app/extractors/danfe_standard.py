@@ -52,6 +52,15 @@ _PRODUCTS_TOTAL_LABELS = (
 #: Issuer block, printed in upper or mixed case depending on the generator.
 _ISSUER_LABELS = (("IDENTIFICACAO", "DO", "EMITENTE"),)
 
+#: Recipient block. ``RAZÃO SOCIAL`` also labels the carrier's name further down
+#: the page, and the receipt stub quotes it in a placeholder, so the recipient is
+#: taken from the one printed right under this block title.
+_RECIPIENT_BLOCK_LABELS = (("DESTINATARIO", "REMETENTE"),)
+_RECIPIENT_NAME_LABELS = (("RAZAO", "SOCIAL"),)
+
+#: Digits this long are never part of a company name (four-digit years are).
+_NAME_BREAK_DIGITS = 5
+
 #: Phrase that repeats the issuer name in the receipt area (DanfeSharp only).
 _ISSUER_PHRASE_START = ("RECEBEMOS", "DE")
 _ISSUER_PHRASE_END = ("OS", "PRODUTOS")
@@ -170,6 +179,7 @@ class DanfeStandardExtractor(DanfeExtractor):
         total_read = _read_total_value(document)
         products_read = _read_products_total(document)
         issuer_read = _read_issuer(document)
+        recipient_read = _read_recipient(document)
 
         issues = [
             *key_read.issues,
@@ -178,6 +188,7 @@ class DanfeStandardExtractor(DanfeExtractor):
             *total_read.issues,
             *products_read.issues,
             *issuer_read.issues,
+            *recipient_read.issues,
         ]
         blocked = key_read.blocked or date_read.blocked or total_read.blocked
         blocked_detail = (
@@ -197,6 +208,7 @@ class DanfeStandardExtractor(DanfeExtractor):
             total_value=total_read.value,
             products_total=products_read.value,
             issuer=issuer_read.value,
+            recipient=recipient_read.value,
         )
 
         return ExtractionResult(
@@ -444,6 +456,78 @@ def _read_receipt_issuer(document: Document) -> str | None:
         if name and "RAZAO SOCIAL" not in name:
             return name
     return None
+
+
+def _read_recipient(document: Document) -> _Read:
+    """Read the recipient's name: the ``RAZÃO SOCIAL`` under the destinatário block.
+
+    In the DanfeSharp layout the name shares its row with the CNPJ and the
+    emission date, so the value is cut where the numbers begin; in the ERP
+    variant the values have rows of their own.
+    """
+    read = _Read()
+    anchor = _recipient_name_anchor(document)
+    if anchor is None:
+        return read
+
+    line = find_line_below(document, anchor, max_distance=20.0)
+    if line is None:
+        return read
+    name = _name_before_numbers(line.text)
+    if not name:
+        return read
+    read.value = name
+    return read
+
+
+def _recipient_name_anchor(document: Document):
+    """The ``RAZÃO SOCIAL`` label that belongs to the destinatário block.
+
+    Picks the first one below the block title: the carrier's own ``RAZÃO SOCIAL``
+    sits much further down, and the placeholder in the receipt stub sits above.
+    """
+    blocks = find_anchors(document, _RECIPIENT_BLOCK_LABELS)
+    if not blocks:
+        return None
+    block = blocks[0]
+    best = None
+    for candidate in find_anchors(document, _RECIPIENT_NAME_LABELS):
+        if candidate.page_number != block.page_number:
+            continue
+        if candidate.direction != block.direction:
+            continue
+        gap = candidate.frame.stack[0] - block.frame.stack[1]
+        if gap < -2.0:
+            continue
+        if best is None or gap < best[0]:
+            best = (gap, candidate)
+    return best[1] if best else None
+
+
+def _name_before_numbers(text: str) -> str:
+    """Cut a printed row at the first token that is a number, not a name.
+
+    A company can be called ``MERCADO 2000`` or ``PIER 43``, so a short number on
+    its own stays. What stops the name is a printed document number: dots,
+    slashes or dashes holding digits (``10.898.825/0001-29``, ``08/09/2026``), or
+    a run of five digits and up - the codes the DanfeSharp layout prints in the
+    same cell, right after the name.
+    """
+    kept: list[str] = []
+    for token in text.split():
+        if _looks_like_document_number(token.strip(":")):
+            break
+        kept.append(token)
+    return " ".join(kept).strip(" -")
+
+
+def _looks_like_document_number(token: str) -> bool:
+    """Whether a printed token is a document number rather than part of a name."""
+    if not any(character.isdigit() for character in token):
+        return False
+    if any(separator in token for separator in "./-"):
+        return True
+    return token.isdigit() and len(token) >= _NAME_BREAK_DIGITS
 
 
 def _find_run(tokens: tuple[str, ...], wanted: tuple[str, ...], start: int = 0):

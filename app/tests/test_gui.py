@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.models import FailureCode, Status
+from app.core.models import FailureCode, NameSource, Status
 from app.gui import app_window, settings as settings_module
 from app.gui.app_window import split_dropped_paths
 from app.gui.i18n import (
@@ -170,6 +170,17 @@ def test_diagnostics_are_written_to_a_file(tmp_path):
     assert "drag_and_drop:" in text
 
 
+def run_window_batch(window, timeout: float = 30) -> None:
+    """Start a batch and pump the Tk loop until the window has its summary."""
+    window.start_processing()
+    deadline = time.time() + timeout
+    while window.summary is None and time.time() < deadline:
+        window._drain_events()
+        window.root.update()
+        time.sleep(0.02)
+    assert window.summary is not None, "the batch never finished"
+
+
 def test_window_starts_in_english_and_switches_language(window):
     from app import __version__
 
@@ -190,14 +201,8 @@ def test_window_processes_a_batch_end_to_end(window, tmp_path):
     window._add_sources([source])
     assert len(window.selected) == 1
 
-    window.start_processing()
-    deadline = time.time() + 30
-    while window.summary is None and time.time() < deadline:
-        window._drain_events()
-        window.root.update()
-        time.sleep(0.02)
+    run_window_batch(window)
 
-    assert window.summary is not None, "the batch never finished"
     assert window.summary.succeeded == 1
     assert window.summary.errors == 0
     expected = (
@@ -217,15 +222,8 @@ def test_window_reports_why_a_file_was_skipped(window, tmp_path):
     broken = tmp_path / "broken.pdf"
     broken.write_bytes(b"not a pdf")
     window._add_sources([broken])
-    window.start_processing()
+    run_window_batch(window)
 
-    deadline = time.time() + 30
-    while window.summary is None and time.time() < deadline:
-        window._drain_events()
-        window.root.update()
-        time.sleep(0.02)
-
-    assert window.summary is not None
     assert window.summary.skipped == 1
     assert window.failure_label.cget("text").strip()
     assert "PDF could not be read" in window.failure_label.cget("text")
@@ -244,6 +242,100 @@ def test_window_refuses_to_start_without_files(window, monkeypatch):
     assert window.summary is None
     assert shown, "the user has to be told that nothing was selected"
     assert shown[0][1] == window.translate("no_files_alert")
+
+
+# ---------------------------------------------------------------- name source
+
+
+def test_the_window_starts_naming_files_after_the_issuer(window):
+    assert window.name_source is NameSource.EMITENTE
+    assert window.name_source_var.get() == NameSource.EMITENTE.value
+    assert window.name_source_buttons[NameSource.EMITENTE].cget("text").startswith("Issuer")
+    assert window.name_source_buttons[NameSource.RECIPIENT].cget("text") == (
+        "Recipient — RAZÃO SOCIAL"
+    )
+
+
+def test_the_name_source_labels_follow_the_language(window):
+    window.translate.set_language("pt")
+    window.root.update()
+
+    assert window.name_source_label.cget("text") == "Nome no arquivo"
+    assert window.name_source_buttons[NameSource.EMITENTE].cget("text") == (
+        "Emitente — IDENTIFICAÇÃO DO EMITENTE"
+    )
+    assert window.name_source_buttons[NameSource.RECIPIENT].cget("text") == (
+        "Destinatário — RAZÃO SOCIAL"
+    )
+
+
+def test_the_name_source_choice_survives_a_restart(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings_module, "settings_directory", lambda: tmp_path)
+
+    assert settings_module.load_name_source() is NameSource.EMITENTE
+    settings_module.save_name_source(NameSource.RECIPIENT)
+
+    assert settings_module.load_name_source() is NameSource.RECIPIENT
+    stored = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+    assert stored["name_source"] == "destinatario"
+
+
+def test_an_unknown_saved_name_source_falls_back_to_the_issuer(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings_module, "settings_directory", lambda: tmp_path)
+    (tmp_path / "settings.json").write_text('{"name_source": "destinatario "}', encoding="utf-8")
+    assert settings_module.load_name_source() is NameSource.EMITENTE
+
+
+def test_the_two_preferences_do_not_overwrite_each_other(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings_module, "settings_directory", lambda: tmp_path)
+    settings_module.save_language("pt")
+    settings_module.save_name_source(NameSource.RECIPIENT)
+    assert settings_module.load_language() == "pt"
+    assert settings_module.load_name_source() is NameSource.RECIPIENT
+
+
+def test_a_radio_click_remembers_the_choice(window):
+    assert settings_module.load_name_source() is NameSource.EMITENTE
+
+    window.name_source_buttons[NameSource.RECIPIENT].invoke()
+
+    assert window.name_source is NameSource.RECIPIENT
+    assert settings_module.load_name_source() is NameSource.RECIPIENT
+
+
+def test_a_batch_from_the_window_can_be_named_after_the_recipient(window, tmp_path):
+    source = tmp_path / "in" / "nota.pdf"
+    write_danfe(source, issuer="INDUSTRIA EXEMPLO LTDA", recipient="COMERCIO EXEMPLO LTDA")
+    window.name_source_buttons[NameSource.RECIPIENT].invoke()
+    window._add_sources([source])
+
+    run_window_batch(window)
+
+    assert window.summary.succeeded == 1
+    expected = (
+        window.summary.output_directory
+        / "16.09.2026_NF 1234 - COMERCIO EXEMPLO LTDA - 1.234,56.pdf"
+    )
+    assert expected.exists()
+    assert source.exists(), "the original must still be there"
+
+
+def test_the_details_pane_shows_both_names_and_the_choice(window, tmp_path):
+    source = tmp_path / "in" / "nota.pdf"
+    write_danfe(source, issuer="INDUSTRIA EXEMPLO LTDA", recipient="COMERCIO EXEMPLO LTDA")
+    window.name_source_buttons[NameSource.RECIPIENT].invoke()
+    window._add_sources([source])
+    run_window_batch(window)
+
+    window.show_details()
+    window.root.update()
+    window.details_table.selection_set("0")
+    window.root.update()
+    text = window.detail_label.cget("text")
+
+    assert "Recipient — RAZÃO SOCIAL" in text, text
+    assert "INDUSTRIA EXEMPLO LTDA" in text, "both names are shown"
+    assert "COMERCIO EXEMPLO LTDA" in text
 
 
 # --------------------------------------------------------------- drag and drop

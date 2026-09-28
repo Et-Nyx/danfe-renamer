@@ -1,16 +1,17 @@
 # DANFE/NF-e local renamer
 
-A fully offline Windows application that reads NF-e/DANFE PDFs, extracts four
-fields and writes **renamed copies** into a fresh folder for the batch. The
-originals are never modified, moved, renamed or deleted.
+A fully offline Windows application that reads NF-e/DANFE PDFs, extracts the
+fields the file name needs and writes **renamed copies** into a fresh folder for
+the batch. The originals are never modified, moved, renamed or deleted.
 
 Target file name:
 
 ```text
-DD.MM.YYYY_NF <number> - <Emitente> - <valor>.pdf
+DD.MM.YYYY_NF <number> - <name> - <valor>.pdf
 ```
 
-Example:
+`<name>` is the company the file is named after: the **emitente** by default, or
+the **destinatário** if the batch was run with that choice. Example:
 
 ```text
 16.09.2026_NF 1234 - Industria Exemplo Ltda - 1.234,56.pdf
@@ -31,6 +32,7 @@ them.
 | Emission date | `DATA DE EMISSÃO` (also `DATA DA EMISSÃO`) | Never `DATA DE SAÍDA`; year and month must agree with the key. |
 | Total value | `VALOR TOTAL DA NOTA` (also `V. TOTAL DA NOTA`) | Never `VALOR TOTAL DOS PRODUTOS` / `V. TOTAL PRODUTOS`; printed with the Brazilian decimal comma. |
 | Emitente | `IDENTIFICAÇÃO DO EMITENTE` block | Cross-checked against the receipt phrase when the document prints one. |
+| Destinatário | `RAZÃO SOCIAL` under the `DESTINATÁRIO / REMETENTE` title | Both names are always read; only the chosen one goes into the file name. |
 
 Anything that could make the file name wrong is a failure, reported with a
 reason, and the file is skipped. Nothing is guessed.
@@ -46,6 +48,9 @@ PYTHONPATH= .venv/Scripts/python.exe run_danfe_renamer.py
 # a batch, no window: renamed copies go to <input>/DANFE_Renamed/<timestamp>/
 PYTHONPATH= .venv/Scripts/python.exe -m app.cli "C:/notas"
 
+# name the copies after the recipient (RAZÃO SOCIAL) instead of the issuer
+PYTHONPATH= .venv/Scripts/python.exe -m app.cli "C:/notas" --name-source destinatario
+
 # analyse without writing anything, and keep a report
 PYTHONPATH= .venv/Scripts/python.exe -m app.cli "C:/notas" --dry-run --report C:/tmp/report --verbose
 ```
@@ -53,7 +58,8 @@ PYTHONPATH= .venv/Scripts/python.exe -m app.cli "C:/notas" --dry-run --report C:
 The command line exits `0` when every file was renamed and `1` when anything was
 skipped or failed, so it can be used from a scheduled task.
 
-The window has an English/Portuguese switch (top right); the choice is stored in
+The window has an English/Portuguese switch (top right) and the **Name in the
+file name** choice (issuer or recipient); both are stored in
 `%APPDATA%\DANFE_Renamer\settings.json`.
 
 ## What every batch produces
@@ -75,7 +81,7 @@ a name produced twice in one run is reported as a collision instead.
 export PYTHONPATH=                      # see the note below, it matters
 /c/ProgramData/anaconda3/python.exe -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements-dev.txt
-.venv/Scripts/python.exe -m pytest      # 102 tests, no confidential data needed
+.venv/Scripts/python.exe -m pytest      # 143 tests, no confidential data needed
 ```
 
 > **Note (this machine):** a user-level `PYTHONPATH` points at an old ClickOnce
@@ -100,11 +106,13 @@ PYTHONPATH= .venv/Scripts/python.exe -m tools.inventory --data-root "C:/notas"
 PYTHONPATH= .venv/Scripts/python.exe -m tools.evaluate_corpus --data-root "C:/notas"
 ```
 
-Last measured on the real corpus (457 PDFs, 360 of them with a matching XML):
+Last measured on the real corpus (459 PDFs, 362 of them with a matching XML):
 
-- 457/457 processed, 0 failures, ~15 s;
-- 360/360 agreement with the XMLs on NF number, emission date, total value and issuer;
-- 456/456 agreement with the receipt stub on the date, 455/455 on the value;
+- 459/459 processed, 0 failures, ~20 s;
+- 362/362 agreement with the XMLs on NF number, emission date, total value and
+  issuer, and 362/362 on the recipient (in 2 of them the DANFE cuts the printed
+  name; the application reads what is printed);
+- 456/456 agreement with the receipt stub on the date, 457/457 on the value;
 - the two files that disagree with their hand-made names are human errors: a typed
   `1.0450,00` and a date that matches neither the PDF nor the stub.
 

@@ -152,6 +152,61 @@ def test_issuer_is_taken_from_the_emitente_block_not_the_recipient(tmp_path):
     assert validated(path).issuer == "INDUSTRIA MODELO LTDA EPP"
 
 
+def test_both_names_are_read_from_the_same_document(tmp_path):
+    path = tmp_path / "both.pdf"
+    write_danfe(
+        path,
+        issuer="INDUSTRIA MODELO LTDA EPP",
+        recipient="DISTRIBUIDORA MODELO LTDA",
+    )
+    record = validated(path)
+    assert record.issuer == "INDUSTRIA MODELO LTDA EPP"
+    assert record.recipient == "DISTRIBUIDORA MODELO LTDA"
+
+
+def test_recipient_is_read_on_both_layouts(tmp_path):
+    portrait = tmp_path / "portrait.pdf"
+    landscape = tmp_path / "landscape.pdf"
+    write_danfe(portrait, recipient="COMERCIO EXEMPLO LTDA")
+    write_danfe(landscape, recipient="COMERCIO EXEMPLO LTDA", landscape=True)
+    assert validated(portrait).recipient == "COMERCIO EXEMPLO LTDA"
+    assert validated(landscape).recipient == "COMERCIO EXEMPLO LTDA"
+
+
+def test_a_document_without_a_recipient_block_says_so(tmp_path):
+    """Nothing is invented: the recipient is missing, and the file says so."""
+    from app.core.models import NameSource
+    from app.extractors.danfe_standard import DanfeStandardExtractor
+
+    path = tmp_path / "no-recipient.pdf"
+    write_danfe(path)
+    result = DanfeStandardExtractor().extract(load_document(path))
+    assert result.fields.recipient is None
+    outcome = validate(result, name_source=NameSource.RECIPIENT)
+    assert outcome.failure_code is FailureCode.RECIPIENT_NOT_FOUND
+
+
+@pytest.mark.parametrize(
+    "printed, expected",
+    [
+        ("COMERCIO EXEMPLO LTDA", "COMERCIO EXEMPLO LTDA"),
+        # A lone hyphen is part of the name, not the start of a number.
+        ("SAL - EMPREENDIMENTOS LTDA", "SAL - EMPREENDIMENTOS LTDA"),
+        # Short numbers are names too; document numbers end the name.
+        ("PIER 43 COMERCIO LTDA", "PIER 43 COMERCIO LTDA"),
+        ("MERCADO 2000 LTDA 10.898.825/0001-29 08/09/2026", "MERCADO 2000 LTDA"),
+        # Four digits could still be a name; five and up are codes.
+        ("EMPRESA EXEMPLO LTDA 5102 51020", "EMPRESA EXEMPLO LTDA 5102"),
+        ("12345678901234 COMERCIO", ""),
+        ("", ""),
+    ],
+)
+def test_a_printed_row_is_cut_where_the_name_ends(printed, expected):
+    from app.extractors.danfe_standard import _name_before_numbers
+
+    assert _name_before_numbers(printed) == expected
+
+
 def test_accented_issuer_is_kept_as_printed(tmp_path):
     path = tmp_path / "accented.pdf"
     write_danfe(path, issuer="São João Comércio Ltda")

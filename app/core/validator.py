@@ -3,6 +3,11 @@
 Every condition that could make the filename wrong is a FAIL (the file is
 skipped and explained). Warnings are recorded when the document is still
 unambiguous.
+
+``name_source`` says which of the two printed names the file name should carry;
+the validator fails the file when that particular name is missing, rather than
+falling back to the other one - a file named after the wrong company is exactly
+the kind of quiet mistake the plan forbids.
 """
 
 from __future__ import annotations
@@ -13,13 +18,18 @@ from .models import (
     ExtractionResult,
     ExtractedFields,
     FailureCode,
+    NameSource,
     ValidatedRecord,
     ValidationOutcome,
     failure,
 )
 
 
-def validate(result: ExtractionResult) -> ValidationOutcome:
+def validate(
+    result: ExtractionResult,
+    *,
+    name_source: NameSource = NameSource.EMITENTE,
+) -> ValidationOutcome:
     """Apply the cross-field rules to an extraction result."""
     if result.blocked_by is not None:
         return failure(result.blocked_by, result.blocked_detail)
@@ -63,8 +73,9 @@ def validate(result: ExtractionResult) -> ValidationOutcome:
     if fields.total_value is None:
         return failure(FailureCode.TOTAL_VALUE_NOT_FOUND)
 
-    if fields.issuer is None or not fields.issuer.strip():
-        return failure(FailureCode.ISSUER_NOT_FOUND)
+    name, name_failure = _chosen_name(fields, name_source)
+    if name_failure is not None:
+        return name_failure
 
     return ValidationOutcome(
         status=CheckStatus.PASS,
@@ -73,10 +84,26 @@ def validate(result: ExtractionResult) -> ValidationOutcome:
             nf_number=access_key.nf_number,
             emission_date=emission_date,
             total_value=fields.total_value,
-            issuer=fields.issuer.strip(),
+            name=name,
+            name_source=name_source,
+            issuer=fields.issuer,
+            recipient=fields.recipient,
         ),
         warnings=tuple(warnings),
     )
+
+
+def _chosen_name(
+    fields: ExtractedFields, name_source: NameSource
+) -> tuple[str | None, ValidationOutcome | None]:
+    """The name the file should carry, or the failure that prevents naming it."""
+    if name_source is NameSource.RECIPIENT:
+        if fields.recipient is None or not fields.recipient.strip():
+            return None, failure(FailureCode.RECIPIENT_NOT_FOUND)
+        return fields.recipient.strip(), None
+    if fields.issuer is None or not fields.issuer.strip():
+        return None, failure(FailureCode.ISSUER_NOT_FOUND)
+    return fields.issuer.strip(), None
 
 
 def _validated_key(

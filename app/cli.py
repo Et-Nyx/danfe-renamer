@@ -10,6 +10,10 @@ Analysis only, no files written (used to measure a corpus)::
 
     python -m app.cli "C:/notas" --dry-run --report C:/tmp/reports --verbose
 
+File names built from the recipient's name instead of the issuer's::
+
+    python -m app.cli "C:/notas" --name-source destinatario
+
 Environment report, for a support request (no document data in it)::
 
     python -m app.cli --diagnostics
@@ -23,7 +27,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .core.models import BatchSummary, Status
+from .core.models import BatchSummary, NameSource, Status
 from .core.pipeline import run_batch
 from .reporting.report import write_reports
 
@@ -171,6 +175,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="report version and environment (Tk, drag-and-drop, PDF library), then exit",
     )
+    parser.add_argument(
+        "--name-source",
+        choices=[source.value for source in NameSource],
+        default=NameSource.EMITENTE.value,
+        help=(
+            "which printed name the file names carry: emitente "
+            "(IDENTIFICAÇÃO DO EMITENTE) or destinatario (RAZÃO SOCIAL)"
+        ),
+    )
     parser.add_argument("--limit", type=int, help="process at most N files")
     parser.add_argument(
         "--verbose", action="store_true", help="print one line per file"
@@ -202,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
         output_root,
         copy_files=not args.dry_run,
         progress=_progress_printer() if not args.verbose else None,
+        name_source=NameSource(args.name_source),
     )
     extra_report_directory: Path | None = None
     if args.report:

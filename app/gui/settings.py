@@ -1,9 +1,10 @@
-"""One small settings file, so a choice survives the next start.
+r"""One small settings file, so a choice survives the next start.
 
 The application runs from an .exe on a machine the user may not control, so the
 settings go where the user can write: ``%APPDATA%\DANFE_Renamer\settings.json``,
 falling back to the home directory. Nothing about the documents is stored here,
-only preferences such as the interface language.
+only preferences such as the interface language and where the file names take
+their company name from.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import json
 import os
 from pathlib import Path
 
+from ..core.models import NameSource
 from .i18n import DEFAULT_LANGUAGE, STRINGS
 
 APP_DIRECTORY_NAME = "DANFE_Renamer"
@@ -72,4 +74,19 @@ def save_language(language: str) -> None:
         raise ValueError(f"unknown language: {language!r}")
     values = load_settings()
     values["language"] = language
+    save_settings(values)
+
+
+def load_name_source() -> NameSource:
+    """Which printed name the file names carry: the saved choice, or the issuer's."""
+    saved = load_settings().get("name_source")
+    try:
+        return NameSource(saved)
+    except ValueError:
+        return NameSource.EMITENTE
+
+
+def save_name_source(name_source: NameSource) -> None:
+    values = load_settings()
+    values["name_source"] = NameSource(name_source).value
     save_settings(values)

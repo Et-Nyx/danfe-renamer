@@ -9,7 +9,7 @@ import pytest
 
 from app import __version__
 from app.core.detector import detect
-from app.core.models import FailureCode, Status
+from app.core.models import FailureCode, NameSource, Status
 from app.core.pipeline import analyze_file, run_batch
 from app.pdf.text import load_document
 
@@ -55,6 +55,8 @@ def test_batch_report_lists_the_agreed_columns(tmp_path):
         "emission_date",
         "valor_total_da_nota",
         "issuer",
+        "recipient",
+        "name_source",
         "target_filename",
         "reason",
         "warnings",
@@ -76,6 +78,44 @@ def test_dry_run_writes_nothing(tmp_path):
     assert summary.succeeded == 1
     assert summary.output_directory is None
     assert not output_root.exists()
+    assert list(tmp_path.rglob("*.pdf")) == [source]
+
+
+def test_a_batch_can_name_the_copies_after_the_recipient(tmp_path):
+    source = _make_danfe(
+        tmp_path / "nota.pdf",
+        issuer="INDUSTRIA EXEMPLO LTDA",
+        recipient="COMERCIO EXEMPLO LTDA",
+    )
+
+    summary = run_batch(
+        [source], tmp_path / "out", name_source=NameSource.RECIPIENT
+    )
+
+    expected = "16.09.2026_NF 1234 - COMERCIO EXEMPLO LTDA - 1.234,56.pdf"
+    assert summary.succeeded == 1
+    assert summary.output_directory is not None
+    assert (summary.output_directory / expected).exists()
+    assert not (summary.output_directory / EXPECTED_NAME).exists()
+    outcome = summary.outcomes[0]
+    assert outcome.name_source == NameSource.RECIPIENT.value
+    assert outcome.issuer == "INDUSTRIA EXEMPLO LTDA", "both names are reported"
+    assert outcome.recipient == "COMERCIO EXEMPLO LTDA"
+    csv_text = summary.report_paths["csv"].read_text(encoding="utf-8-sig")
+    assert "destinatario" in csv_text
+
+
+def test_the_chosen_name_missing_skips_the_file_with_its_own_code(tmp_path):
+    """No recipient in the document, recipient chosen: nothing is written."""
+    source = _make_danfe(tmp_path / "nota.pdf")
+    output_root = tmp_path / "out"
+
+    summary = run_batch(
+        [source], output_root, name_source=NameSource.RECIPIENT
+    )
+
+    assert summary.skipped == 1
+    assert summary.outcomes[0].failure_code is FailureCode.RECIPIENT_NOT_FOUND
     assert list(tmp_path.rglob("*.pdf")) == [source]
 
 

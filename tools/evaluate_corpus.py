@@ -61,6 +61,7 @@ class XmlFacts:
     total_value: Decimal | None
     issuer: str | None
     issuer_cnpj: str | None
+    recipient: str | None
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,7 @@ def _parse_xml(path: Path) -> XmlFacts | None:
     total = _text(inf_nfe, "total/ICMSTot/vNF")
     issuer = _text(inf_nfe, "emit/xNome")
     cnpj = _text(inf_nfe, "emit/CNPJ")
+    recipient = _text(inf_nfe, "dest/xNome")
     return XmlFacts(
         key=key,
         nf_number=number.lstrip("0") or "0",
@@ -130,6 +132,7 @@ def _parse_xml(path: Path) -> XmlFacts | None:
         total_value=_decimal_or_none(total),
         issuer=issuer,
         issuer_cnpj=cnpj,
+        recipient=recipient,
     )
 
 
@@ -246,7 +249,10 @@ def compare(pdf: Path, xml_facts: dict[str, XmlFacts]) -> Comparison:
         comparison.checks["total_value"] = _verdict(
             _decimal_of(outcome.total_value), xml.total_value
         )
-        comparison.checks["issuer"] = _issuer_verdict(outcome.issuer, xml.issuer)
+        comparison.checks["issuer"] = _name_verdict(outcome.issuer, xml.issuer)
+        comparison.checks["recipient"] = _name_verdict(
+            outcome.recipient, xml.recipient
+        )
         comparison.checks["access_key_matches_xml"] = "agrees"
 
     if name_facts is not None:
@@ -261,7 +267,7 @@ def compare(pdf: Path, xml_facts: dict[str, XmlFacts]) -> Comparison:
             _decimal_of(outcome.total_value), name_facts.total_value
         )
         if name_facts.issuer_hint and xml is None:
-            comparison.checks[prefix + "issuer"] = _issuer_verdict(
+            comparison.checks[prefix + "issuer"] = _name_verdict(
                 outcome.issuer, name_facts.issuer_hint
             )
 
@@ -293,16 +299,23 @@ def _verdict(extracted, expected) -> str:
     return ORACLE_AGREEMENT if extracted == expected else ORACLE_MISMATCH
 
 
-def _issuer_verdict(extracted: str | None, expected: str | None) -> str:
+def _name_verdict(extracted: str | None, expected: str | None) -> str:
+    """Compare a printed company name with the one in the XML.
+
+    A DANFE prints names inside fixed-width cells and cuts them off, so a name
+    that is a prefix of the expected one is agreement, not an error.
+    """
     if not expected:
         return ORACLE_MISSING
     if not extracted:
         return ORACLE_MISMATCH
-    ratio = difflib.SequenceMatcher(
-        None, _issuer_key(extracted), _issuer_key(expected)
-    ).ratio()
-    if ratio == 1.0:
+    extracted_key = _issuer_key(extracted)
+    expected_key = _issuer_key(expected)
+    if extracted_key == expected_key:
         return ORACLE_AGREEMENT
+    if expected_key.startswith(extracted_key) and len(extracted_key) >= 8:
+        return f"agrees (printed cut short at {len(extracted)} characters)"
+    ratio = difflib.SequenceMatcher(None, extracted_key, expected_key).ratio()
     if ratio >= 0.75:
         return f"differs a little ({ratio:.2f})"
     return ORACLE_MISMATCH

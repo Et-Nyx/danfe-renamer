@@ -12,7 +12,7 @@ from app.core.filename import (
     build_filename,
     sanitize_component,
 )
-from app.core.models import ValidatedRecord
+from app.core.models import NameSource, ValidatedRecord
 from app.pdf.access_key import AccessKey
 
 KEY = AccessKey("24260912345678000199550010000012341234567891")
@@ -24,7 +24,10 @@ def record(**overrides) -> ValidatedRecord:
         "nf_number": "1234",
         "emission_date": date(2026, 9, 16),
         "total_value": "1.234,56",
-        "issuer": "Industria Exemplo Ltda",
+        "name": "Industria Exemplo Ltda",
+        "name_source": NameSource.EMITENTE,
+        "issuer": "INDUSTRIA EXEMPLO LTDA",
+        "recipient": "COMERCIO EXEMPLO LTDA",
     }
     values.update(overrides)
     return ValidatedRecord(**values)
@@ -32,6 +35,18 @@ def record(**overrides) -> ValidatedRecord:
 
 def test_filename_follows_the_agreed_pattern():
     assert build_filename(record()) == "16.09.2026_NF 1234 - Industria Exemplo Ltda - 1.234,56.pdf"
+
+
+def test_filename_carries_the_name_the_record_was_built_with():
+    """The middle field is the chosen name: emitente or destinatário alike."""
+    chosen = record(
+        name="Comercio Exemplo Ltda",
+        name_source=NameSource.RECIPIENT,
+        issuer="INDUSTRIA EXEMPLO LTDA",
+        recipient="COMERCIO EXEMPLO LTDA",
+    )
+    assert build_filename(chosen) == "16.09.2026_NF 1234 - Comercio Exemplo Ltda - 1.234,56.pdf"
+    assert "INDUSTRIA" not in build_filename(chosen)
 
 
 def test_printed_amount_is_reproduced_not_converted():
@@ -63,13 +78,13 @@ def test_spacing_of_valid_data_is_not_rewritten():
 
 
 def test_meaning_of_valid_data_is_kept():
-    name = build_filename(record(issuer="EMPRESA EXEMPLO LTDA [DEVOLUÇÃO]"))
+    name = build_filename(record(name="EMPRESA EXEMPLO LTDA [DEVOLUÇÃO]"))
     assert "EMPRESA EXEMPLO LTDA [DEVOLUÇÃO]" in name
 
 
-def test_very_long_issuer_is_shortened_to_a_usable_length():
-    long_issuer = "EMPRESA MUITO LONGA " * 12
-    name = build_filename(record(issuer=long_issuer))
+def test_very_long_name_is_shortened_to_a_usable_length():
+    long_name = "EMPRESA MUITO LONGA " * 12
+    name = build_filename(record(name=long_name))
     assert len(name) <= MAX_FILENAME_LENGTH + len(".pdf")
     assert name.endswith(" - 1.234,56.pdf")
     assert name.startswith("16.09.2026_NF 1234 - ")
@@ -78,8 +93,8 @@ def test_very_long_issuer_is_shortened_to_a_usable_length():
 def test_generated_names_can_never_be_reserved_windows_names():
     """The template starts with the date, so a reserved name is impossible."""
     extremes = [
-        record(nf_number="1", issuer="CON", total_value="0,00"),
-        record(nf_number="1", issuer="NUL", total_value="0,00"),
+        record(nf_number="1", name="CON", total_value="0,00"),
+        record(nf_number="1", name="NUL", total_value="0,00"),
     ]
     for item in extremes:
         name = build_filename(item)

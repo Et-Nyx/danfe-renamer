@@ -10,6 +10,7 @@ from app.core.models import (
     ExtractedFields,
     ExtractionResult,
     FailureCode,
+    NameSource,
 )
 from app.core.validator import validate
 from app.pdf.access_key import AccessKey
@@ -27,6 +28,7 @@ def _result(**overrides) -> ExtractionResult:
         "emission_date_text": "08/09/2026",
         "total_value": "9.876,54",
         "issuer": "DISTRIBUIDORA MODELO LTDA",
+        "recipient": "COMERCIO EXEMPLO LTDA",
     }
     fields.update(overrides)
     return ExtractionResult(
@@ -92,3 +94,34 @@ def test_blocked_extraction_keeps_its_own_code():
 def test_printed_number_absence_is_only_a_warning():
     outcome = validate(_result(printed_nf_number=None))
     assert outcome.passed
+
+
+# --------------------------------------------------------------- name source
+
+
+def test_the_file_name_takes_the_issuer_by_default():
+    record = validate(_result()).record
+    assert record is not None
+    assert record.name == "DISTRIBUIDORA MODELO LTDA"
+    assert record.name_source is NameSource.EMITENTE
+    assert record.recipient == "COMERCIO EXEMPLO LTDA", "both names are kept"
+
+
+def test_the_recipient_can_name_the_file_instead():
+    record = validate(_result(), name_source=NameSource.RECIPIENT).record
+    assert record is not None
+    assert record.name == "COMERCIO EXEMPLO LTDA"
+    assert record.name_source is NameSource.RECIPIENT
+    assert record.issuer == "DISTRIBUIDORA MODELO LTDA", "both names are kept"
+
+
+@pytest.mark.parametrize("blank", [None, "   "])
+def test_the_chosen_name_has_to_be_present(blank):
+    """A missing name fails the file; the other name is never used instead."""
+    assert validate(_result(recipient=blank)).passed, "the issuer was chosen"
+    outcome = validate(_result(recipient=blank), name_source=NameSource.RECIPIENT)
+    assert outcome.failure_code is FailureCode.RECIPIENT_NOT_FOUND
+    assert outcome.record is None
+
+    other = validate(_result(issuer=blank), name_source=NameSource.EMITENTE)
+    assert other.failure_code is FailureCode.ISSUER_NOT_FOUND

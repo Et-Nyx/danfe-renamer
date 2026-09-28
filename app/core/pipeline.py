@@ -33,6 +33,7 @@ from .models import (
     BatchSummary,
     FailureCode,
     FileOutcome,
+    NameSource,
     Status,
     ValidatedRecord,
 )
@@ -51,7 +52,9 @@ class FileAnalysis:
     record: ValidatedRecord | None = None
 
 
-def analyze_file(source: Path) -> FileAnalysis:
+def analyze_file(
+    source: Path, *, name_source: NameSource = NameSource.EMITENTE
+) -> FileAnalysis:
     """Read and validate one PDF; never touches the filesystem beyond reading."""
     source = Path(source)
     started = time.perf_counter()
@@ -81,9 +84,11 @@ def analyze_file(source: Path) -> FileAnalysis:
     outcome.emission_date = result.fields.emission_date_text
     outcome.total_value = result.fields.total_value
     outcome.issuer = result.fields.issuer
+    outcome.recipient = result.fields.recipient
+    outcome.name_source = name_source.value
     outcome.warnings = list(result.warnings)
 
-    validation = validate(result)
+    validation = validate(result, name_source=name_source)
     if not validation.passed:
         outcome.failure_code = validation.failure_code
         outcome.reason = validation.reason
@@ -108,11 +113,13 @@ def run_batch(
     copy_files: bool = True,
     progress: ProgressCallback | None = None,
     timestamp: datetime | None = None,
+    name_source: NameSource = NameSource.EMITENTE,
 ) -> BatchSummary:
     """Process a batch of PDFs and copy the successful ones with new names.
 
     With ``copy_files=False`` the run only analyses and reports: no directory is
-    created and nothing is written.
+    created and nothing is written. ``name_source`` decides which printed name
+    the file names carry.
 
     Cyclic garbage collection is paused for the duration of the batch; see
     :func:`_pause_garbage_collection` for why that matters when a window runs the
@@ -125,6 +132,7 @@ def run_batch(
             copy_files=copy_files,
             progress=progress,
             timestamp=timestamp,
+            name_source=name_source,
         )
 
 
@@ -158,6 +166,7 @@ def _run_batch(
     copy_files: bool = True,
     progress: ProgressCallback | None = None,
     timestamp: datetime | None = None,
+    name_source: NameSource = NameSource.EMITENTE,
 ) -> BatchSummary:
     started_at = timestamp or datetime.now()
     unique_sources = _deduplicate(sources)
@@ -182,7 +191,7 @@ def _run_batch(
     for index, source in enumerate(unique_sources, start=1):
         if progress is not None:
             progress(index, total, source)
-        analysis = analyze_file(source)
+        analysis = analyze_file(source, name_source=name_source)
         outcome = analysis.outcome
 
         outcome = _skip_duplicate_note(outcome, notes)

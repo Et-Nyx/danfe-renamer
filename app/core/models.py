@@ -29,6 +29,7 @@ class FailureCode(str, Enum):
     TOTAL_VALUE_NOT_FOUND = "TOTAL_VALUE_NOT_FOUND"
     TOTAL_VALUE_AMBIGUOUS = "TOTAL_VALUE_AMBIGUOUS"
     ISSUER_NOT_FOUND = "ISSUER_NOT_FOUND"
+    RECIPIENT_NOT_FOUND = "RECIPIENT_NOT_FOUND"
     INVALID_FILENAME = "INVALID_FILENAME"
     DUPLICATE_NOTE = "DUPLICATE_NOTE"
     OUTPUT_COLLISION = "OUTPUT_COLLISION"
@@ -52,6 +53,7 @@ FAILURE_MESSAGES: dict[FailureCode, str] = {
     FailureCode.TOTAL_VALUE_NOT_FOUND: "VALOR TOTAL DA NOTA not found",
     FailureCode.TOTAL_VALUE_AMBIGUOUS: "Total value is ambiguous or implausible",
     FailureCode.ISSUER_NOT_FOUND: "Issuer name could not be identified confidently",
+    FailureCode.RECIPIENT_NOT_FOUND: "Recipient name could not be identified confidently",
     FailureCode.INVALID_FILENAME: "Generated filename is not usable on Windows",
     FailureCode.DUPLICATE_NOTE: "This note is already in the batch under another name",
     FailureCode.OUTPUT_COLLISION: "Output filename already exists",
@@ -70,6 +72,19 @@ class Status(str, Enum):
     ERROR = "error"
 
 
+class NameSource(str, Enum):
+    """Which name from the document goes into the file name.
+
+    ``EMITENTE`` is the company that issued the note (``IDENTIFICAÇÃO DO
+    EMITENTE``); ``RECIPIENT`` is the one it was issued to, printed under
+    ``RAZÃO SOCIAL`` in the ``DESTINATÁRIO / REMETENTE`` block. Both are read for
+    every document; this setting only decides which one is used.
+    """
+
+    EMITENTE = "emitente"
+    RECIPIENT = "destinatario"
+
+
 class CheckStatus(str, Enum):
     """Outcome of the validation layer."""
 
@@ -84,7 +99,7 @@ class ExtractedFields:
 
     Everything is kept as *printed*: ``access_key_digits`` is the 44-digit
     string, ``emission_date_text`` is ``16/09/2026``, ``total_value`` is
-    ``1.234,56``. The validator turns these into trusted values.
+    ``2.999,51``. The validator turns these into trusted values.
     """
 
     access_key_digits: str | None = None
@@ -94,6 +109,7 @@ class ExtractedFields:
     total_value: str | None = None
     products_total: str | None = None
     issuer: str | None = None
+    recipient: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,7 +120,13 @@ class ValidatedRecord:
     nf_number: str
     emission_date: date
     total_value: str
-    issuer: str
+    #: The name the file name will show, and where it came from.
+    name: str
+    name_source: NameSource
+    #: Both names as printed, so a report can show what the choice was made from.
+    issuer: str | None
+    recipient: str | None
+
 
 
 @dataclass(frozen=True)
@@ -166,6 +188,8 @@ class FileOutcome:
     issuer: str | None = None
     target_filename: str | None = None
     destination_path: Path | None = None
+    recipient: str | None = None
+    name_source: str | None = None
     warnings: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
 

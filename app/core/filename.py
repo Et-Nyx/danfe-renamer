@@ -49,21 +49,25 @@ def sanitize_component(text: str) -> str:
 
 
 def build_filename(record: ValidatedRecord) -> str:
-    """Build the target file name for a validated record."""
+    """Build the target file name for a validated record.
+
+    The name in the middle is the record's chosen one: the issuer, or the
+    recipient when the document was processed with that preference.
+    """
     date_part = format_br_date(record.emission_date)
     number_part = sanitize_component(record.nf_number)
     value_part = sanitize_component(record.total_value)
-    issuer_part = _fit_issuer(record, date_part, number_part, value_part)
-    return f"{date_part}_NF {number_part} - {issuer_part} - {value_part}.pdf"
+    name_part = _fit_name(record, date_part, number_part, value_part)
+    return f"{date_part}_NF {number_part} - {name_part} - {value_part}.pdf"
 
 
-def _fit_issuer(
+def _fit_name(
     record: ValidatedRecord, date_part: str, number_part: str, value_part: str
 ) -> str:
-    """Sanitize the issuer name, shortening it only if the name gets too long."""
-    issuer = sanitize_component(record.issuer)
+    """Sanitize the name, shortening it only if the whole name gets too long."""
+    name = sanitize_component(record.name)
     fixed_length = len(f"{date_part}_NF {number_part} -  - {value_part}.pdf")
     available = MAX_FILENAME_LENGTH - fixed_length
-    if len(issuer) <= available:
-        return issuer
-    return issuer[:available].rstrip(" .-")
+    if len(name) <= available:
+        return name
+    return name[:available].rstrip(" .-")

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..core.models import NameSource
+
 DEFAULT_LANGUAGE = "en"
 
 #: Language code -> the name shown in the selector, written in that language.
@@ -17,12 +19,22 @@ LANGUAGE_NAMES = {
     "pt": "Português",
 }
 
+#: Each name source and the string that labels it, so the selector, the details
+#: pane and the reports all speak about the choice the same way.
+NAME_SOURCE_KEYS = {
+    NameSource.EMITENTE: "name_source_emitente",
+    NameSource.RECIPIENT: "name_source_recipient",
+}
+
 STRINGS: dict[str, dict[str, str]] = {
     "en": {
         "window_title": "DANFE Renamer",
         "headline": "DANFE Renamer",
         "subtitle": "Rename DANFE/NF-e PDFs into copies with the agreed name pattern.",
         "language_label": "Language",
+        "name_source_label": "Name in the file name",
+        "name_source_emitente": "Issuer — IDENTIFICAÇÃO DO EMITENTE",
+        "name_source_recipient": "Recipient — RAZÃO SOCIAL",
         "drop_hint": "Drop your PDF files here, or choose files or a folder.",
         "drop_hint_buttons": "Choose the PDF files or the folder to process.",
         "choose_files": "Choose PDFs",
@@ -60,6 +72,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "field_date": "Emission date",
         "field_value": "VALOR TOTAL DA NOTA",
         "field_issuer": "Issuer",
+        "field_recipient": "Recipient",
         "field_destination": "Copied to",
         "field_warnings": "Notes",
         "field_duration": "Took",
@@ -77,6 +90,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "headline": "Renomeador de DANFE",
         "subtitle": "Renomeia PDFs de DANFE/NF-e em cópias com o padrão de nome combinado.",
         "language_label": "Idioma",
+        "name_source_label": "Nome no arquivo",
+        "name_source_emitente": "Emitente — IDENTIFICAÇÃO DO EMITENTE",
+        "name_source_recipient": "Destinatário — RAZÃO SOCIAL",
         "drop_hint": "Arraste os PDFs para cá, ou escolha arquivos ou uma pasta.",
         "drop_hint_buttons": "Escolha os PDFs ou a pasta que deseja processar.",
         "choose_files": "Escolher PDFs",
@@ -114,6 +130,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "field_date": "Data de emissão",
         "field_value": "VALOR TOTAL DA NOTA",
         "field_issuer": "Emitente",
+        "field_recipient": "Destinatário",
         "field_destination": "Copiado para",
         "field_warnings": "Observações",
         "field_duration": "Levou",
@@ -193,3 +210,12 @@ def translate_failure(code, translate: Translator) -> str:
     from ..core.models import FAILURE_MESSAGES
 
     return FAILURE_MESSAGES.get(code, translate("errors", count=1))
+
+
+def describe_name_source(value, translate: Translator) -> str:
+    """A record's stored ``name_source`` value as the label the selector shows."""
+    try:
+        source = NameSource(value)
+    except ValueError:
+        return str(value) if value else "-"
+    return translate(NAME_SOURCE_KEYS[source])
