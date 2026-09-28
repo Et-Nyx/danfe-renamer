@@ -55,7 +55,7 @@ class _DropEvent:
         self.data = data
 
 
-def split_dropped_paths(data: str, splitter=None) -> list[Path]:
+def split_dropped_paths(data: str, splitter) -> list[Path]:
     """Turn a drop's payload into paths.
 
     Tk sends a Tcl list, which quotes whatever contains spaces or braces, so the
@@ -64,11 +64,14 @@ def split_dropped_paths(data: str, splitter=None) -> list[Path]:
     eaten by a hand-written parser. A payload that is not a well-formed Tcl list
     is split on line breaks instead, so an odd source still produces paths rather
     than an exception.
+
+    ``splitter`` is the caller's interpreter - in the window always
+    ``root.tk.splitlist``. It is passed in rather than made here because a process
+    should hold one Tcl interpreter (see :func:`create_root`): a second one may not
+    find Tcl's own library directory on a machine where the first one did.
     """
     if not data or not data.strip():
         return []
-    if splitter is None:
-        splitter = tk.Tcl().splitlist
     try:
         items = splitter(data)
     except tk.TclError:

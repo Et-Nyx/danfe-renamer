@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import time
-import tkinter as tk
 from pathlib import Path
 
 import pytest
@@ -341,20 +340,21 @@ def test_the_details_pane_shows_both_names_and_the_choice(window, tmp_path):
 # --------------------------------------------------------------- drag and drop
 
 
-def tcl_list(paths) -> str:
+def tcl_list(paths, tcl) -> str:
     """Build a drop payload the way Tk builds one.
 
-    The items go through Tcl's own list builder, so the quoting is exactly what a
-    real drop carries rather than what a test guesses.
+    The items go through Tcl's own list builder - the live window's interpreter,
+    the one the application itself uses, not a second one it would have to share
+    the process with - so the quoting is exactly what a real drop carries rather
+    than what a test guesses.
     """
-    tcl = tk.Tcl()
     tcl.eval("set dropped [list]")
     for path in paths:
         tcl.call("lappend", "dropped", str(path))
     return tcl.eval("set dropped")
 
 
-def test_dropped_paths_survive_a_real_payload(tmp_path):
+def test_dropped_paths_survive_a_real_payload(shared_root, tmp_path):
     """Paths with spaces have to survive the round trip."""
     names = ["a.pdf", "nota fiscal 09.09.2026.pdf", "nota de 1,50.pdf"]
     paths = []
@@ -363,11 +363,10 @@ def test_dropped_paths_survive_a_real_payload(tmp_path):
         path.write_bytes(b"%PDF-1.4")
         paths.append(path)
 
-    payload = tcl_list(paths)
+    payload = tcl_list(paths, shared_root.tk)
 
     assert "{" in payload, "Tk quotes an element with spaces"
-    assert split_dropped_paths(payload, tk.Tcl().splitlist) == paths
-    assert split_dropped_paths(payload) == paths, "the default splitter is Tcl's"
+    assert split_dropped_paths(payload, shared_root.tk.splitlist) == paths
 
 
 def test_a_path_with_braces_is_repaired_after_the_drop(window, tmp_path):
@@ -375,20 +374,22 @@ def test_a_path_with_braces_is_repaired_after_the_drop(window, tmp_path):
     tricky = tmp_path / "nota {copia} 2.pdf"
     write_danfe(tricky)
 
-    window._on_drop(app_window._DropEvent(tcl_list([tricky])))
+    window._on_drop(app_window._DropEvent(tcl_list([tricky], window.root.tk)))
 
     assert [path.name for path in window.selected] == [tricky.name]
 
 
-def test_a_folder_in_the_payload_is_kept(tmp_path):
+def test_a_folder_in_the_payload_is_kept(shared_root, tmp_path):
     folder = tmp_path / "notas fiscais"
     folder.mkdir()
-    assert split_dropped_paths(tcl_list([folder])) == [folder]
-    assert split_dropped_paths("") == []
-    assert split_dropped_paths("   ") == []
+    assert split_dropped_paths(
+        tcl_list([folder], shared_root.tk), shared_root.tk.splitlist
+    ) == [folder]
+    assert split_dropped_paths("", shared_root.tk.splitlist) == []
+    assert split_dropped_paths("   ", shared_root.tk.splitlist) == []
 
 
-def test_a_malformed_payload_still_yields_paths():
+def test_a_malformed_payload_still_yields_paths(shared_root):
     """An unbalanced brace must not raise: the whole line is taken at face value.
 
     A payload that is a valid Tcl list is always taken at Tcl's word: an unquoted
@@ -396,7 +397,7 @@ def test_a_malformed_payload_still_yields_paths():
     read as a raw line.
     """
     single = "C:/notas/uma nota.pdf {C:/notas/aberto.pdf"
-    found = split_dropped_paths(single)
+    found = split_dropped_paths(single, shared_root.tk.splitlist)
     assert [str(path) for path in found] == [str(Path(single))]
 
 
@@ -408,7 +409,7 @@ def test_dropping_a_folder_adds_its_pdfs(window, tmp_path):
     write_danfe(folder / "nota 2.pdf")
     (folder / "leiame.txt").write_text("not a pdf", encoding="utf-8")
 
-    window._on_drop(app_window._DropEvent(tcl_list([folder])))
+    window._on_drop(app_window._DropEvent(tcl_list([folder], window.root.tk)))
 
     assert sorted(path.name for path in window.selected) == ["nota 1.pdf", "nota 2.pdf"]
     assert window.selection_label.cget("text") == "2 file(s) selected"
