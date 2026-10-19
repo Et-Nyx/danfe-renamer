@@ -22,9 +22,10 @@ from tkinter import filedialog, messagebox, ttk
 
 from .. import __version__
 from ..cli import collect_sources, default_output_root
-from ..core.models import BatchSummary, FileOutcome, NameSource, Status
+from ..core.models import BatchSummary, FileOutcome, InputKind, NameSource, Status
 from ..core.pipeline import run_batch
 from .i18n import (
+    INPUT_KIND_KEYS,
     LANGUAGE_NAMES,
     NAME_SOURCE_KEYS,
     Translator,
@@ -32,7 +33,14 @@ from .i18n import (
     summarise,
     translate_failure,
 )
-from .settings import load_language, load_name_source, save_language, save_name_source
+from .settings import (
+    load_input_kind,
+    load_language,
+    load_name_source,
+    save_input_kind,
+    save_language,
+    save_name_source,
+)
 
 POLL_INTERVAL_MS = 80
 
@@ -116,6 +124,7 @@ class RenamerWindow:
         self.root = root
         self.dnd_available = dnd_available
         self.translate = Translator(load_language())
+        self.input_kind_var = tk.StringVar(value=load_input_kind().value)
         self.selected: list[Path] = []
         self.summary: BatchSummary | None = None
         self.details_window: tk.Toplevel | None = None
@@ -156,6 +165,7 @@ class RenamerWindow:
         self.subtitle_label = ttk.Label(self.frame, wraplength=640, justify="left")
         self.subtitle_label.pack(fill="x", pady=(6, 10))
 
+        self._build_input_selector()
         self._build_name_source_selector()
 
         self.drop_hint_label = ttk.Label(self.frame, anchor="center", foreground="#555555")
@@ -201,7 +211,7 @@ class RenamerWindow:
 
         self.result_frame = ttk.LabelFrame(self.frame, padding=10)
         self.result_labels: list[ttk.Label] = []
-        for _ in range(4):
+        for _ in range(5):
             label = ttk.Label(self.result_frame)
             label.pack(anchor="w")
             self.result_labels.append(label)
@@ -215,6 +225,27 @@ class RenamerWindow:
 
         self._refresh_selection()
         self._refresh_result_visibility()
+
+    def _build_input_selector(self) -> None:
+        """Choose which files a batch reads: XML, PDF, or both.
+
+        XML is the main workflow: it is converted and then named. PDF keeps the
+        original behaviour for files that were generated elsewhere.
+        """
+        options = ttk.Frame(self.frame)
+        options.pack(fill="x", pady=(0, 4))
+        self.input_kind_label = ttk.Label(options)
+        self.input_kind_label.pack(side="left", padx=(0, 10))
+        self.input_kind_buttons: dict[InputKind, ttk.Radiobutton] = {}
+        for kind in (InputKind.XML, InputKind.PDF, InputKind.BOTH):
+            button = ttk.Radiobutton(
+                options,
+                variable=self.input_kind_var,
+                value=kind.value,
+                command=self._on_input_kind_selected,
+            )
+            button.pack(side="left", padx=(0, 12))
+            self.input_kind_buttons[kind] = button
 
     def _build_name_source_selector(self) -> None:
         """The one processing choice: which printed company names the files.
@@ -276,6 +307,9 @@ class RenamerWindow:
         self.title_label.configure(text=t("headline"))
         self.subtitle_label.configure(text=t("subtitle"))
         self.language_label.configure(text=t("language_label"))
+        self.input_kind_label.configure(text=t("input_label"))
+        for kind, button in self.input_kind_buttons.items():
+            button.configure(text=t(INPUT_KIND_KEYS[kind]))
         self.name_source_label.configure(text=t("name_source_label"))
         for source, button in self.name_source_buttons.items():
             button.configure(text=t(NAME_SOURCE_KEYS[source]))
@@ -309,9 +343,20 @@ class RenamerWindow:
                 save_language(code)
                 return
 
+    def _on_input_kind_selected(self) -> None:
+        """Remember the input kind and drop files of the previous kind."""
+        save_input_kind(self.input_kind)
+        self.selected.clear()
+        self._refresh_selection()
+
     def _on_name_source_selected(self) -> None:
         """Remember the choice straight away, so the next start keeps it."""
         save_name_source(self.name_source)
+
+    @property
+    def input_kind(self) -> InputKind:
+        """Which files the next selection and batch read."""
+        return InputKind(self.input_kind_var.get())
 
     @property
     def name_source(self) -> NameSource:
@@ -323,7 +368,12 @@ class RenamerWindow:
     def choose_files(self) -> None:
         paths = filedialog.askopenfilenames(
             title=self.translate("choose_files"),
-            filetypes=[("PDF", "*.pdf"), ("All files", "*.*")],
+            filetypes=[
+                ("XML and PDF", "*.xml *.pdf"),
+                ("XML", "*.xml"),
+                ("PDF", "*.pdf"),
+                ("All files", "*.*"),
+            ],
         )
         self._add_sources([Path(path) for path in paths])
 
@@ -349,7 +399,9 @@ class RenamerWindow:
         excluded = []
         if self.summary is not None and self.summary.output_directory is not None:
             excluded.append(self.summary.output_directory)
-        for found in collect_sources(paths, excluded):
+        for found in collect_sources(
+            paths, excluded, input_kind=self.input_kind
+        ):
             if found not in self.selected:
                 self.selected.append(found)
         self._refresh_selection()
@@ -461,7 +513,13 @@ class RenamerWindow:
         lines = summarise(summary, self.translate)
         for label, text in zip(
             self.result_labels,
-            (lines.analyzed, lines.renamed, lines.skipped, lines.errors),
+            (
+                lines.analyzed,
+                lines.renamed,
+                lines.converted,
+                lines.skipped,
+                lines.errors,
+            ),
         ):
             label.configure(text=text)
         if lines.failures:
@@ -542,13 +600,16 @@ class RenamerWindow:
             Status.ERROR: t("status_error"),
         }
         for index, outcome in enumerate(self.summary.outcomes):
+            status = status_names[outcome.status]
+            if outcome.status is Status.SUCCESS and outcome.generated:
+                status = t("status_generated")
             table.insert(
                 "",
                 "end",
                 iid=str(index),
                 text=outcome.source_path.name,
                 values=(
-                    status_names[outcome.status],
+                    status,
                     outcome.target_filename or "-",
                     outcome.reason or "",
                 ),
@@ -564,6 +625,10 @@ class RenamerWindow:
         def describe(outcome: FileOutcome) -> str:
             rows = [
                 f"{t('field_parser')}: {outcome.parser_id or '-'}",
+                f"{t('field_source_type')}: {outcome.source_type or '-'}",
+                f"{t('field_model')}: {outcome.document_model or '-'}",
+                f"{t('field_generated')}: "
+                f"{t('yes') if outcome.generated else t('no')}",
                 f"{t('field_access_key')}: {outcome.access_key or '-'}",
                 f"{t('field_nf_number')}: {outcome.nf_number or '-'}",
                 f"{t('field_date')}: {outcome.emission_date or '-'}",

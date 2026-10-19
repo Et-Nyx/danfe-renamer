@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from .text import Document, Line, Word
 
 NFE_MODEL = "55"
+NFCE_MODEL = "65"
 KEY_LENGTH = 44
 
 #: How many lines a printed key may span (the key is often split over lines).
@@ -121,6 +122,15 @@ class AccessKey:
     @property
     def is_nfe(self) -> bool:
         return self.model == NFE_MODEL
+
+    @property
+    def is_nfce(self) -> bool:
+        return self.model == NFCE_MODEL
+
+    @property
+    def is_supported(self) -> bool:
+        """Whether the document model is an NF-e or NFC-e."""
+        return self.model in (NFE_MODEL, NFCE_MODEL)
 
 
 @dataclass(frozen=True)

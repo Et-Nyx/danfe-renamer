@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.models import FailureCode, NameSource, Status
+from app.core.models import FailureCode, InputKind, NameSource, Status
 from app.gui import app_window, settings as settings_module
 from app.gui.app_window import split_dropped_paths
 from app.gui.i18n import (
@@ -101,8 +101,10 @@ def test_summary_text_is_in_the_selected_language():
     english = summarise(summary, Translator("en"))
     portuguese = summarise(summary, Translator("pt"))
     assert english.analyzed == "2 files analyzed"
+    assert english.converted == "0 converted from XML"
     assert english.skipped == "1 skipped"
     assert portuguese.analyzed == "2 arquivos analisados"
+    assert portuguese.converted == "0 convertidos de XML"
     assert portuguese.failures[0][1] == 1
     assert "VALOR TOTAL DA NOTA" in portuguese.failures[0][0]
 
@@ -197,6 +199,7 @@ def test_window_processes_a_batch_end_to_end(window, tmp_path):
     """The GUI path must produce renamed copies through the same pipeline."""
     source = tmp_path / "in" / "nota.pdf"
     write_danfe(source)
+    window.input_kind_buttons[InputKind.PDF].invoke()
     window._add_sources([source])
     assert len(window.selected) == 1
 
@@ -220,6 +223,7 @@ def test_window_processes_a_batch_end_to_end(window, tmp_path):
 def test_window_reports_why_a_file_was_skipped(window, tmp_path):
     broken = tmp_path / "broken.pdf"
     broken.write_bytes(b"not a pdf")
+    window.input_kind_buttons[InputKind.PDF].invoke()
     window._add_sources([broken])
     run_window_batch(window)
 
@@ -246,12 +250,41 @@ def test_window_refuses_to_start_without_files(window, monkeypatch):
 # ---------------------------------------------------------------- name source
 
 
+def test_the_window_starts_in_xml_mode(window):
+    """XML is the main workflow; PDF remains a selectable option."""
+    assert window.input_kind is InputKind.XML
+    assert window.input_kind_var.get() == InputKind.XML.value
+    assert window.input_kind_buttons[InputKind.XML].cget("text") == (
+        "XML — convert and rename"
+    )
+    assert window.input_kind_buttons[InputKind.PDF].cget("text") == (
+        "PDF — rename only"
+    )
+
+
+def test_the_input_kind_choice_survives_a_restart(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings_module, "settings_directory", lambda: tmp_path)
+    assert settings_module.load_input_kind() is InputKind.XML
+    settings_module.save_input_kind(InputKind.PDF)
+    assert settings_module.load_input_kind() is InputKind.PDF
+    stored = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+    assert stored["input_kind"] == "pdf"
+
+
+def test_an_unknown_saved_input_kind_falls_back_to_xml(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings_module, "settings_directory", lambda: tmp_path)
+    (tmp_path / "settings.json").write_text(
+        '{"input_kind": "docx"}', encoding="utf-8"
+    )
+    assert settings_module.load_input_kind() is InputKind.XML
+
+
 def test_the_window_starts_naming_files_after_the_issuer(window):
     assert window.name_source is NameSource.EMITENTE
     assert window.name_source_var.get() == NameSource.EMITENTE.value
     assert window.name_source_buttons[NameSource.EMITENTE].cget("text").startswith("Issuer")
     assert window.name_source_buttons[NameSource.RECIPIENT].cget("text") == (
-        "Recipient — RAZÃO SOCIAL"
+        "Recipient — Outgoing Note"
     )
 
 
@@ -261,10 +294,10 @@ def test_the_name_source_labels_follow_the_language(window):
 
     assert window.name_source_label.cget("text") == "Nome no arquivo"
     assert window.name_source_buttons[NameSource.EMITENTE].cget("text") == (
-        "Emitente — IDENTIFICAÇÃO DO EMITENTE"
+        "Emitente — Nota de Entrada"
     )
     assert window.name_source_buttons[NameSource.RECIPIENT].cget("text") == (
-        "Destinatário — RAZÃO SOCIAL"
+        "Destinatário — Nota de Saída"
     )
 
 
@@ -305,6 +338,7 @@ def test_a_radio_click_remembers_the_choice(window):
 def test_a_batch_from_the_window_can_be_named_after_the_recipient(window, tmp_path):
     source = tmp_path / "in" / "nota.pdf"
     write_danfe(source, issuer="INDUSTRIA EXEMPLO LTDA", recipient="COMERCIO EXEMPLO LTDA")
+    window.input_kind_buttons[InputKind.PDF].invoke()
     window.name_source_buttons[NameSource.RECIPIENT].invoke()
     window._add_sources([source])
 
@@ -322,6 +356,7 @@ def test_a_batch_from_the_window_can_be_named_after_the_recipient(window, tmp_pa
 def test_the_details_pane_shows_both_names_and_the_choice(window, tmp_path):
     source = tmp_path / "in" / "nota.pdf"
     write_danfe(source, issuer="INDUSTRIA EXEMPLO LTDA", recipient="COMERCIO EXEMPLO LTDA")
+    window.input_kind_buttons[InputKind.PDF].invoke()
     window.name_source_buttons[NameSource.RECIPIENT].invoke()
     window._add_sources([source])
     run_window_batch(window)
@@ -332,7 +367,7 @@ def test_the_details_pane_shows_both_names_and_the_choice(window, tmp_path):
     window.root.update()
     text = window.detail_label.cget("text")
 
-    assert "Recipient — RAZÃO SOCIAL" in text, text
+    assert "Recipient — Outgoing Note" in text, text
     assert "INDUSTRIA EXEMPLO LTDA" in text, "both names are shown"
     assert "COMERCIO EXEMPLO LTDA" in text
 
@@ -374,6 +409,7 @@ def test_a_path_with_braces_is_repaired_after_the_drop(window, tmp_path):
     tricky = tmp_path / "nota {copia} 2.pdf"
     write_danfe(tricky)
 
+    window.input_kind_buttons[InputKind.PDF].invoke()
     window._on_drop(app_window._DropEvent(tcl_list([tricky], window.root.tk)))
 
     assert [path.name for path in window.selected] == [tricky.name]
@@ -409,6 +445,7 @@ def test_dropping_a_folder_adds_its_pdfs(window, tmp_path):
     write_danfe(folder / "nota 2.pdf")
     (folder / "leiame.txt").write_text("not a pdf", encoding="utf-8")
 
+    window.input_kind_buttons[InputKind.PDF].invoke()
     window._on_drop(app_window._DropEvent(tcl_list([folder], window.root.tk)))
 
     assert sorted(path.name for path in window.selected) == ["nota 1.pdf", "nota 2.pdf"]
@@ -427,7 +464,7 @@ def test_window_says_when_dropping_is_not_available(shared_root, tmp_path, monke
         shared_root.update()
         assert (
             window.drop_hint_label.cget("text")
-            == "Escolha os PDFs ou a pasta que deseja processar."
+            == "Escolha os XMLs/PDFs ou a pasta que deseja processar."
         )
     finally:
         window._close_details()

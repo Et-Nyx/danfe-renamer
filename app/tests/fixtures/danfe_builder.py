@@ -1,8 +1,8 @@
 """Synthetic DANFE builders for tests.
 
-Real invoices are confidential, so tests build their own PDFs. The builders
-reproduce what the production generators actually do, which is what the parser
-has to cope with:
+Real invoices are confidential, so tests build their own PDFs and XMLs. The
+builders reproduce what the production generators actually do, which is what
+the parser has to cope with:
 
 * the label of a cell and the value under it are separate rows that touch;
 * the access key is printed in groups of four, sometimes interleaved with the
@@ -15,6 +15,9 @@ Fixtures are written with PyMuPDF, the same library the application reads with.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
+from xml.sax.saxutils import escape
 
 import pymupdf
 
@@ -217,6 +220,176 @@ def _draw_body(
         value_x=x + 330,
         header=True,
     )
+
+
+# --------------------------------------------------------------- XML builders
+
+NFE_NAMESPACE = "http://www.portalfiscal.inf.br/nfe"
+
+
+def make_nfe_xml(
+    nf_number: str = "1234",
+    *,
+    series: str = "001",
+    control: str = "123456789",
+    model: str = "55",
+    issuer: str = "INDUSTRIA EXEMPLO LTDA",
+    recipient: str = "COMERCIO EXEMPLO LTDA",
+    total: str = "1234.56",
+    emission: str = "2026-09-16T10:30:00-03:00",
+    homologation: bool = False,
+    include_protocol: bool = True,
+    status: str = "100",
+) -> tuple[str, str]:
+    """Build a synthetic, valid NF-e (55) or NFC-e (65) XML.
+
+    Every company, key and amount here is invented, exactly like the PDF
+    fixtures. Returns ``(xml_text, access_key)``.
+    """
+    key = make_access_key(
+        nf_number, model=model, series=series, control=control
+    )
+    is_nfce = model == "65"
+    inf_supl = (
+        "<infNFeSupl>"
+        f"<qrCode><![CDATA[http://example.test/qrcode?p={key}|2|1|1|abcdef]]></qrCode>"
+        "<urlChave>http://example.test/consulta</urlChave>"
+        "</infNFeSupl>"
+        if is_nfce
+        else ""
+    )
+    protocol = ""
+    if include_protocol:
+        protocol = (
+            '  <protNFe versao="4.00">\n'
+            "   <infProt>\n"
+            f"    <tpAmb>{2 if homologation else 1}</tpAmb>\n"
+            "    <verAplic>TEST</verAplic>\n"
+            f"    <chNFe>{key}</chNFe>\n"
+            f"    <dhRecbto>{emission}</dhRecbto>\n"
+            "    <nProt>135260000000001</nProt>\n"
+            "    <digVal>AAAA</digVal>\n"
+            f"    <cStat>{status}</cStat>\n"
+            "    <xMotivo>Autorizado o uso da NF-e</xMotivo>\n"
+            "   </infProt>\n"
+            "  </protNFe>\n"
+        )
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<nfeProc xmlns="{NFE_NAMESPACE}" versao="4.00">
+ <NFe>
+  <infNFe Id="NFe{key}" versao="4.00">
+   <ide>
+    <cUF>24</cUF>
+    <cNF>12345678</cNF>
+    <natOp>VENDA DE MERCADORIA</natOp>
+    <mod>{model}</mod>
+    <serie>{series}</serie>
+    <nNF>{int(nf_number)}</nNF>
+    <dhEmi>{emission}</dhEmi>
+    <tpNF>1</tpNF>
+    <idDest>1</idDest>
+    <cMunFG>2408102</cMunFG>
+    <tpImp>{5 if is_nfce else 1}</tpImp>
+    <tpEmis>1</tpEmis>
+    <cDV>{key[-1]}</cDV>
+    <tpAmb>{2 if homologation else 1}</tpAmb>
+    <finNFe>1</finNFe>
+    <indFinal>1</indFinal>
+    <indPres>1</indPres>
+    <indIntermed>0</indIntermed>
+    <procEmi>0</procEmi>
+    <verProc>TEST</verProc>
+   </ide>
+   <emit>
+    <CNPJ>12.345.678/0001-99</CNPJ>
+    <xNome>{escape(issuer)}</xNome>
+    <xFant>{escape(issuer)}</xFant>
+    <enderEmit>
+     <xLgr>RUA EXEMPLO</xLgr><nro>100</nro><xBairro>CENTRO</xBairro>
+     <cMun>2408102</cMun><xMun>NATAL</xMun><UF>RN</UF><CEP>59000000</CEP>
+     <cPais>1058</cPais><xPais>BRASIL</xPais><fone>8433330000</fone>
+    </enderEmit>
+    <IE>204348854</IE>
+    <CRT>3</CRT>
+   </emit>
+   <dest>
+    <CPF>15619273415</CPF>
+    <xNome>{escape(recipient)}</xNome>
+    <enderDest>
+     <xLgr>RUA DESTINO</xLgr><nro>200</nro><xBairro>CENTRO</xBairro>
+     <cMun>2408102</cMun><xMun>NATAL</xMun><UF>RN</UF><CEP>59000001</CEP>
+     <cPais>1058</cPais><xPais>BRASIL</xPais>
+    </enderDest>
+    <indIEDest>9</indIEDest>
+    <email>exemplo@example.com</email>
+   </dest>
+   <det nItem="1">
+    <prod>
+     <cProd>0001</cProd><cEAN>SEM GTIN</cEAN>
+     <xProd>PRODUTO EXEMPLO</xProd>
+     <NCM>87089490</NCM><CEST>0000000</CEST><CFOP>5102</CFOP>
+     <uCom>UN</uCom><qCom>1.0000</qCom><vUnCom>{total}</vUnCom>
+     <vProd>{total}</vProd>
+     <cEANTrib>SEM GTIN</cEANTrib><uTrib>UN</uTrib><qTrib>1.0000</qTrib>
+     <vUnTrib>{total}</vUnTrib><vDesc>0.00</vDesc><indTot>1</indTot>
+    </prod>
+    <imposto>
+     <vTotTrib>4.15</vTotTrib>
+     <ICMS><ICMS00><orig>0</orig><CST>00</CST><modBC>3</modBC>
+      <vBC>{total}</vBC><pICMS>20.0000</pICMS><vICMS>2.60</vICMS></ICMS00></ICMS>
+     <PIS><PISAliq><CST>01</CST><vBC>{total}</vBC><pPIS>1.6500</pPIS>
+      <vPIS>0.17</vPIS></PISAliq></PIS>
+     <COFINS><COFINSAliq><CST>01</CST><vBC>{total}</vBC><pCOFINS>7.6000</pCOFINS>
+      <vCOFINS>0.79</vCOFINS></COFINSAliq></COFINS>
+    </imposto>
+    <vItem>{total}</vItem>
+   </det>
+   <total>
+    <ICMSTot>
+     <vBC>{total}</vBC><vICMS>2.60</vICMS><vICMSDeson>0.00</vICMSDeson>
+     <vFCP>0.00</vFCP><vBCST>0.00</vBCST><vST>0.00</vST>
+     <vFCPST>0.00</vFCPST><vFCPSTRet>0.00</vFCPSTRet>
+     <vProd>{total}</vProd><vFrete>0.00</vFrete><vSeg>0.00</vSeg>
+     <vDesc>0.00</vDesc><vII>0.00</vII><vIPI>0.00</vIPI>
+     <vIPIDevol>0.00</vIPIDevol><vPIS>0.17</vPIS><vCOFINS>0.79</vCOFINS>
+     <vOutro>0.00</vOutro><vNF>{total}</vNF><vTotTrib>4.15</vTotTrib>
+    </ICMSTot>
+   </total>
+   <transp><modFrete>9</modFrete></transp>
+   <pag><detPag><indPag>0</indPag><tPag>01</tPag><vPag>{total}</vPag></detPag></pag>
+   <infAdic><infCpl>DOCUMENTO DE TESTE</infCpl></infAdic>
+   {inf_supl}
+  </infNFe>
+ </NFe>
+{protocol}</nfeProc>
+"""
+    return xml, key
+
+
+def make_nfce_xml(nf_number: str = "1234", **overrides) -> tuple[str, str]:
+    """A synthetic NFC-e (model 65) XML with the same invented data."""
+    overrides.setdefault("model", "65")
+    return make_nfe_xml(nf_number, **overrides)
+
+
+def write_nfe_xml(path, **kwargs) -> str:
+    """Write a synthetic NF-e XML and return its access key."""
+    xml, key = make_nfe_xml(**kwargs)
+    _write_xml(path, xml)
+    return key
+
+
+def write_nfce_xml(path, **kwargs) -> str:
+    """Write a synthetic NFC-e XML and return its access key."""
+    xml, key = make_nfce_xml(**kwargs)
+    _write_xml(path, xml)
+    return key
+
+
+def _write_xml(path, xml: str) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(xml, encoding="utf-8")
 
 
 def _draw_product_rows(

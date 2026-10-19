@@ -1,6 +1,12 @@
 # Runtime dependencies of the application.
 pymupdf>=1.24,<2
 
+# Converts NF-e/NFC-e XML into DANFE/DANFCe PDFs. Pure Python and offline.
+brazilfiscalreport>=1.3.1,<2
+
+# Parses invoice XML without entity-expansion attacks.
+defusedxml>=0.7,<1
+
 # Optional: lets the window accept dropped files. Without it the window still
 # opens and the buttons work, so it is not required to run from source.
 tkinterdnd2>=0.4

@@ -28,6 +28,9 @@ REPORT_FIELDS = (
     "target_filename",
     "reason",
     "warnings",
+    "source_type",
+    "document_model",
+    "generated",
 )
 
 CSV_DELIMITER = ";"  # Excel in pt-BR opens semicolon-separated files directly.
@@ -71,6 +74,9 @@ def _row(outcome: FileOutcome) -> dict[str, str]:
         "target_filename": outcome.target_filename or "",
         "reason": outcome.reason or "",
         "warnings": " | ".join(outcome.warnings),
+        "source_type": outcome.source_type or "",
+        "document_model": outcome.document_model or "",
+        "generated": "true" if outcome.generated else "false",
     }
 
 
@@ -93,6 +99,7 @@ def _write_json(summary: BatchSummary, path: Path) -> None:
         "totals": {
             "analyzed": summary.total,
             "renamed": summary.succeeded,
+            "converted_from_xml": summary.converted,
             "skipped": summary.skipped,
             "errors": summary.errors,
         },
@@ -132,6 +139,7 @@ def _write_html(summary: BatchSummary, path: Path) -> None:
         finished=escape(summary.finished_at.strftime("%d/%m/%Y %H:%M:%S")),
         total=summary.total,
         renamed=summary.succeeded,
+        converted=summary.converted,
         skipped=summary.skipped,
         errors=summary.errors,
         failure_rows=failure_rows or "<li>No failures.</li>",
@@ -172,6 +180,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
  <li>Finished: {finished}</li>
  <li>{total} files analyzed</li>
  <li>{renamed} renamed successfully</li>
+ <li>{converted} converted from XML</li>
  <li>{skipped} skipped</li>
  <li>{errors} errors</li>
 </ul>

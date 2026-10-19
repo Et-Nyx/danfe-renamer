@@ -9,7 +9,7 @@ import pytest
 
 from app import __version__
 from app.core.detector import detect
-from app.core.models import FailureCode, NameSource, Status
+from app.core.models import FailureCode, InputKind, NameSource, Status
 from app.core.pipeline import analyze_file, run_batch
 from app.pdf.text import load_document
 
@@ -60,12 +60,21 @@ def test_batch_report_lists_the_agreed_columns(tmp_path):
         "target_filename",
         "reason",
         "warnings",
+        "source_type",
+        "document_model",
+        "generated",
     ]
     assert EXPECTED_NAME in csv_text
 
     payload = json.loads(summary.report_paths["json"].read_text(encoding="utf-8"))
     assert payload["application_version"] == __version__
-    assert payload["totals"] == {"analyzed": 1, "renamed": 1, "skipped": 0, "errors": 0}
+    assert payload["totals"] == {
+        "analyzed": 1,
+        "renamed": 1,
+        "converted_from_xml": 0,
+        "skipped": 0,
+        "errors": 0,
+    }
     assert __version__ in summary.report_paths["html"].read_text(encoding="utf-8")
 
 
@@ -235,7 +244,11 @@ def test_nested_source_folders_are_found(tmp_path):
     (tmp_path / "batch" / "out").mkdir()
     _make_danfe(tmp_path / "batch" / "out" / "already_renamed.pdf")
 
-    found = collect_sources([tmp_path / "batch"], [tmp_path / "batch" / "out"])
+    found = collect_sources(
+        [tmp_path / "batch"],
+        [tmp_path / "batch" / "out"],
+        input_kind=InputKind.PDF,
+    )
 
     assert [path.name for path in found] == ["nota.pdf"]
 

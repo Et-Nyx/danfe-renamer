@@ -72,11 +72,20 @@ def test_all_zero_number_is_not_a_usable_nf_number():
     assert outcome.failure_code is FailureCode.NF_NUMBER_INVALID
 
 
-def test_a_nfce_key_is_not_a_danfe():
-    nfce = AccessKey(make_access_key("123", model="65"))
+def test_an_nfce_key_is_accepted():
+    nfce = AccessKey(make_access_key("5678", model="65"))
     outcome = validate(_result(access_key_digits=nfce.digits))
+    assert outcome.passed
+    assert outcome.record is not None
+    assert outcome.record.access_key.is_nfce
+
+
+def test_another_document_model_is_not_a_danfe():
+    cte = AccessKey(make_access_key("5678", model="57"))
+    outcome = validate(_result(access_key_digits=cte.digits))
     assert outcome.failure_code is FailureCode.INVALID_ACCESS_KEY
-    assert "model" in (outcome.reason or "")
+    assert "55" in (outcome.reason or "")
+    assert "65" in (outcome.reason or "")
 
 
 def test_blocked_extraction_keeps_its_own_code():

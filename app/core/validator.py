@@ -116,9 +116,9 @@ def _validated_key(
         key = AccessKey(fields.access_key_digits)
     except InvalidAccessKey as exc:
         return None, failure(FailureCode.INVALID_ACCESS_KEY, str(exc))
-    if not key.is_nfe:
+    if not key.is_supported:
         return None, failure(
             FailureCode.INVALID_ACCESS_KEY,
-            f"document model {key.model} is not NF-e (55)",
+            f"document model {key.model} is not NF-e (55) or NFC-e (65)",
         )
     return key, None

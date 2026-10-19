@@ -36,6 +36,10 @@ class FailureCode(str, Enum):
     OUTPUT_WRITE_ERROR = "OUTPUT_WRITE_ERROR"
     PDF_READ_ERROR = "PDF_READ_ERROR"
     PDF_ENCRYPTED = "PDF_ENCRYPTED"
+    PDF_GENERATION_ERROR = "PDF_GENERATION_ERROR"
+    XML_READ_ERROR = "XML_READ_ERROR"
+    XML_UNSUPPORTED = "XML_UNSUPPORTED"
+    XML_NOT_AUTHORIZED = "XML_NOT_AUTHORIZED"
     UNEXPECTED_EXTRACTION_ERROR = "UNEXPECTED_EXTRACTION_ERROR"
 
 
@@ -60,6 +64,10 @@ FAILURE_MESSAGES: dict[FailureCode, str] = {
     FailureCode.OUTPUT_WRITE_ERROR: "Could not write the renamed copy",
     FailureCode.PDF_READ_ERROR: "PDF could not be read",
     FailureCode.PDF_ENCRYPTED: "PDF is password protected",
+    FailureCode.PDF_GENERATION_ERROR: "PDF could not be generated from the XML",
+    FailureCode.XML_READ_ERROR: "XML could not be read",
+    FailureCode.XML_UNSUPPORTED: "XML is not an NF-e or NFC-e document",
+    FailureCode.XML_NOT_AUTHORIZED: "XML does not carry an authorized NF-e/NFC-e",
     FailureCode.UNEXPECTED_EXTRACTION_ERROR: "Unexpected error while reading the document",
 }
 
@@ -83,6 +91,27 @@ class NameSource(str, Enum):
 
     EMITENTE = "emitente"
     RECIPIENT = "destinatario"
+
+
+class InputKind(str, Enum):
+    """Which input files a batch looks for.
+
+    ``XML`` is the main workflow: the XML is converted to a PDF and then named.
+    ``PDF`` keeps the original behaviour for a folder of PDFs that were already
+    generated elsewhere. ``BOTH`` reads both kinds; a PDF for the same note is
+    preferred over generating one from its XML.
+    """
+
+    XML = "xml"
+    PDF = "pdf"
+    BOTH = "both"
+
+
+class SourceKind(str, Enum):
+    """The kind of file a file outcome was produced from."""
+
+    PDF = "pdf"
+    XML = "xml"
 
 
 class CheckStatus(str, Enum):
@@ -190,6 +219,12 @@ class FileOutcome:
     destination_path: Path | None = None
     recipient: str | None = None
     name_source: str | None = None
+    #: ``pdf`` or ``xml``: the file that was read.
+    source_type: str | None = None
+    #: ``55`` (NF-e) or ``65`` (NFC-e), when known.
+    document_model: str | None = None
+    #: True when the output PDF was generated from an XML by this run.
+    generated: bool = False
     warnings: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
 
@@ -226,6 +261,17 @@ class BatchSummary:
     @property
     def errors(self) -> int:
         return self.count(Status.ERROR)
+
+    @property
+    def converted(self) -> int:
+        """Successful outputs whose PDF was generated from an XML."""
+        return sum(
+            1
+            for outcome in self.outcomes
+            if outcome.status is Status.SUCCESS
+            and outcome.generated
+            and outcome.destination_path is not None
+        )
 
     def failures_by_code(self) -> dict[FailureCode, int]:
         """Group unsuccessful files by failure code, worst first."""

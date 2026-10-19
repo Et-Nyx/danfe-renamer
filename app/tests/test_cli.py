@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.cli import build_parser, main
-from app.core.models import NameSource
+from app.core.models import InputKind, NameSource
 
 from .fixtures.danfe_builder import write_danfe
 
@@ -34,6 +34,10 @@ def test_the_choice_defaults_to_the_issuer():
     assert build_parser().parse_args([]).name_source == NameSource.EMITENTE.value
 
 
+def test_the_input_defaults_to_xml():
+    assert build_parser().parse_args([]).input == InputKind.XML.value
+
+
 def test_an_unknown_choice_is_refused():
     with pytest.raises(SystemExit):
         build_parser().parse_args(["--name-source", "cliente"])
@@ -43,7 +47,7 @@ def test_the_cli_names_the_copies_after_the_issuer(tmp_path):
     source = _source(tmp_path)
     output = tmp_path / "out"
 
-    assert main([str(source), "--output", str(output)]) == 0
+    assert main([str(source), "--output", str(output), "--input", "pdf"]) == 0
 
     batch = _batch_directory(output)
     assert (batch / ISSUER_NAME).exists()
@@ -55,7 +59,15 @@ def test_the_cli_can_name_the_copies_after_the_recipient(tmp_path):
     output = tmp_path / "out"
 
     code = main(
-        [str(source), "--output", str(output), "--name-source", "destinatario"]
+        [
+            str(source),
+            "--output",
+            str(output),
+            "--name-source",
+            "destinatario",
+            "--input",
+            "pdf",
+        ]
     )
 
     assert code == 0

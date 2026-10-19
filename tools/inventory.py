@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.cli import collect_sources
+from app.core.models import InputKind
 from app.pdf.access_key import find_key_occurrences, is_valid_access_key
 from app.pdf.text import PdfReadError, load_document, normalize_text
 from app.extractors.danfe_standard import _DATE_LABELS, _KEY_LABELS, _TOTAL_LABELS
@@ -167,7 +168,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int)
     args = parser.parse_args(argv)
 
-    pdfs = collect_sources([Path(args.data_root)], [])
+    pdfs = collect_sources(
+        [Path(args.data_root)], [], input_kind=InputKind.PDF
+    )
     if args.limit:
         pdfs = pdfs[: args.limit]
 

@@ -13,7 +13,7 @@ import json
 import os
 from pathlib import Path
 
-from ..core.models import NameSource
+from ..core.models import InputKind, NameSource
 from .i18n import DEFAULT_LANGUAGE, STRINGS
 
 APP_DIRECTORY_NAME = "DANFE_Renamer"
@@ -89,4 +89,19 @@ def load_name_source() -> NameSource:
 def save_name_source(name_source: NameSource) -> None:
     values = load_settings()
     values["name_source"] = NameSource(name_source).value
+    save_settings(values)
+
+
+def load_input_kind() -> InputKind:
+    """Which files to collect: XML by default, PDF or both on request."""
+    saved = load_settings().get("input_kind")
+    try:
+        return InputKind(saved)
+    except ValueError:
+        return InputKind.XML
+
+
+def save_input_kind(input_kind: InputKind) -> None:
+    values = load_settings()
+    values["input_kind"] = InputKind(input_kind).value
     save_settings(values)

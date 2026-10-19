@@ -30,7 +30,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from app.cli import collect_sources
-from app.core.models import Status
+from app.core.models import InputKind, Status
 from app.core.normalize import money_to_decimal
 from app.core.pipeline import analyze_file
 from app.pdf.text import load_document, normalize_text
@@ -338,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
     report_dir.mkdir(parents=True, exist_ok=True)
 
     xml_facts = load_xml_facts(data_root)
-    pdfs = collect_sources([data_root], [])
+    pdfs = collect_sources([data_root], [], input_kind=InputKind.PDF)
     if args.limit:
         pdfs = pdfs[: args.limit]
 

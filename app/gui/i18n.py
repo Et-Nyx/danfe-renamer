@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..core.models import NameSource
+from ..core.models import InputKind, NameSource
 
 DEFAULT_LANGUAGE = "en"
 
@@ -26,17 +26,28 @@ NAME_SOURCE_KEYS = {
     NameSource.RECIPIENT: "name_source_recipient",
 }
 
+#: Each input kind and the string that labels it in the window.
+INPUT_KIND_KEYS = {
+    InputKind.XML: "input_xml",
+    InputKind.PDF: "input_pdf",
+    InputKind.BOTH: "input_both",
+}
+
 STRINGS: dict[str, dict[str, str]] = {
     "en": {
         "window_title": "DANFE Renamer",
         "headline": "DANFE Renamer",
         "subtitle": "Rename DANFE/NF-e PDFs into copies with the agreed name pattern.",
         "language_label": "Language",
+        "input_label": "Input files",
+        "input_xml": "XML — convert and rename",
+        "input_pdf": "PDF — rename only",
+        "input_both": "XML + PDF",
         "name_source_label": "Name in the file name",
-        "name_source_emitente": "Issuer — IDENTIFICAÇÃO DO EMITENTE",
-        "name_source_recipient": "Recipient — RAZÃO SOCIAL",
-        "drop_hint": "Drop your PDF files here, or choose files or a folder.",
-        "drop_hint_buttons": "Choose the PDF files or the folder to process.",
+        "name_source_emitente": "Issuer — Incoming Note",
+        "name_source_recipient": "Recipient — Outgoing Note",
+        "drop_hint": "Drop your XML/PDF files here, or choose files or a folder.",
+        "drop_hint_buttons": "Choose the XML/PDF files or the folder to process.",
         "choose_files": "Choose PDFs",
         "choose_folder": "Choose Folder",
         "remove_selected": "Remove selected",
@@ -51,6 +62,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "report_title": "Batch finished",
         "analyzed": "{count} files analyzed",
         "renamed": "{count} renamed successfully",
+        "converted": "{count} converted from XML",
         "skipped": "{count} skipped",
         "errors": "{count} errors",
         "failures_by_reason": "Why files were skipped",
@@ -63,10 +75,16 @@ STRINGS: dict[str, dict[str, str]] = {
         "column_target": "New name",
         "column_reason": "Reason",
         "status_success": "renamed",
+        "status_generated": "converted",
         "status_skipped": "skipped",
         "status_error": "error",
         "technical_details": "Technical details",
         "field_parser": "Layout read by",
+        "field_source_type": "Source type",
+        "field_model": "Document model",
+        "field_generated": "PDF generated",
+        "yes": "yes",
+        "no": "no",
         "field_access_key": "Access key",
         "field_nf_number": "NF number",
         "field_date": "Emission date",
@@ -90,11 +108,15 @@ STRINGS: dict[str, dict[str, str]] = {
         "headline": "Renomeador de DANFE",
         "subtitle": "Renomeia PDFs de DANFE/NF-e em cópias com o padrão de nome combinado.",
         "language_label": "Idioma",
+        "input_label": "Arquivos de entrada",
+        "input_xml": "XML — converter e renomear",
+        "input_pdf": "PDF — apenas renomear",
+        "input_both": "XML + PDF",
         "name_source_label": "Nome no arquivo",
-        "name_source_emitente": "Emitente — IDENTIFICAÇÃO DO EMITENTE",
-        "name_source_recipient": "Destinatário — RAZÃO SOCIAL",
-        "drop_hint": "Arraste os PDFs para cá, ou escolha arquivos ou uma pasta.",
-        "drop_hint_buttons": "Escolha os PDFs ou a pasta que deseja processar.",
+        "name_source_emitente": "Emitente — Nota de Entrada",
+        "name_source_recipient": "Destinatário — Nota de Saída",
+        "drop_hint": "Arraste os XMLs/PDFs para cá, ou escolha arquivos ou uma pasta.",
+        "drop_hint_buttons": "Escolha os XMLs/PDFs ou a pasta que deseja processar.",
         "choose_files": "Escolher PDFs",
         "choose_folder": "Escolher pasta",
         "remove_selected": "Remover selecionados",
@@ -109,6 +131,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "report_title": "Lote concluído",
         "analyzed": "{count} arquivos analisados",
         "renamed": "{count} renomeados com sucesso",
+        "converted": "{count} convertidos de XML",
         "skipped": "{count} ignorados",
         "errors": "{count} erros",
         "failures_by_reason": "Motivos dos arquivos ignorados",
@@ -121,10 +144,16 @@ STRINGS: dict[str, dict[str, str]] = {
         "column_target": "Novo nome",
         "column_reason": "Motivo",
         "status_success": "renomeado",
+        "status_generated": "convertido",
         "status_skipped": "ignorado",
         "status_error": "erro",
         "technical_details": "Detalhes técnicos",
         "field_parser": "Leiaute lido",
+        "field_source_type": "Tipo de origem",
+        "field_model": "Modelo do documento",
+        "field_generated": "PDF gerado",
+        "yes": "sim",
+        "no": "não",
         "field_access_key": "Chave de acesso",
         "field_nf_number": "Número da NF",
         "field_date": "Data de emissão",
@@ -179,6 +208,7 @@ class SummaryText:
 
     analyzed: str
     renamed: str
+    converted: str
     skipped: str
     errors: str
     failures: tuple[tuple[str, int], ...]
@@ -195,6 +225,7 @@ def summarise(summary, translate: Translator) -> SummaryText:
     return SummaryText(
         analyzed=translate("analyzed", count=summary.total),
         renamed=translate("renamed", count=summary.succeeded),
+        converted=translate("converted", count=summary.converted),
         skipped=translate("skipped", count=summary.skipped),
         errors=translate("errors", count=summary.errors),
         failures=failures,

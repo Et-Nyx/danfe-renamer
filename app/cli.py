@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .core.models import BatchSummary, NameSource, Status
+from .core.models import BatchSummary, InputKind, NameSource, Status
 from .core.pipeline import run_batch
 from .reporting.report import write_reports
 
@@ -55,6 +55,7 @@ def collect_diagnostics(*, probe_window: bool = True) -> dict[str, str]:
         "operating_system": platform.platform(),
         "packaged_executable": str(bool(getattr(sys, "frozen", False))),
         "pymupdf": _pymupdf_version(pymupdf),
+        "xml_renderer": _xml_renderer_version(),
     }
     try:
         import tkinter
@@ -97,6 +98,17 @@ def _pymupdf_version(pymupdf) -> str:
     return ".".join(parts) or "unknown"
 
 
+def _xml_renderer_version() -> str:
+    """Report the XML converter without failing diagnostics when it is absent."""
+    try:
+        import brazilfiscalreport
+
+        version = getattr(brazilfiscalreport, "__version__", "unknown")
+        return f"brazilfiscalreport {version}"
+    except Exception as exc:  # pragma: no cover - broken or absent package
+        return f"unavailable: {type(exc).__name__}: {exc}"
+
+
 def report_diagnostics(
     directory: Path | None = None, *, probe_window: bool = True
 ) -> Path:
@@ -111,22 +123,35 @@ def report_diagnostics(
     return target
 
 
-def collect_sources(paths: list[Path], excluded_dirs: list[Path]) -> list[Path]:
-    """Expand files and folders into a sorted list of PDFs.
+def collect_sources(
+    paths: list[Path],
+    excluded_dirs: list[Path],
+    input_kind: InputKind = InputKind.XML,
+) -> list[Path]:
+    """Expand files and folders into a sorted list of XML/PDF inputs.
 
     Folders are searched recursively; anything inside an excluded directory (a
-    previous batch output, for example) is left out.
+    previous batch output, for example) is left out. ``input_kind`` is the
+    program's default: XML is the main workflow, PDFs remain available as an
+    option, and ``BOTH`` reads the two together.
     """
+    suffixes = {
+        InputKind.XML: {".xml"},
+        InputKind.PDF: {".pdf"},
+        InputKind.BOTH: {".pdf", ".xml"},
+    }[input_kind]
     excluded = [path.resolve() for path in excluded_dirs]
     found: list[Path] = []
     for path in paths:
         if path.is_dir():
             found.extend(
                 candidate
-                for candidate in sorted(path.rglob("*.pdf"))
-                if not _is_excluded(candidate, excluded)
+                for candidate in sorted(path.rglob("*"), key=lambda item: str(item).lower())
+                if candidate.is_file()
+                and candidate.suffix.lower() in suffixes
+                and not _is_excluded(candidate, excluded)
             )
-        elif path.suffix.lower() == ".pdf":
+        elif path.suffix.lower() in suffixes:
             found.append(path)
     unique: dict[str, Path] = {}
     for candidate in found:
@@ -155,7 +180,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "sources",
         nargs="*",
-        help="PDF files and/or folders (omit with --diagnostics)",
+        help="XML/PDF files and/or folders (omit with --diagnostics)",
+    )
+    parser.add_argument(
+        "--input",
+        choices=[kind.value for kind in InputKind],
+        default=InputKind.XML.value,
+        help=(
+            "which files to read: xml (convert and rename, default), "
+            "pdf (rename only) or both"
+        ),
     )
     parser.add_argument(
         "--output",
@@ -197,14 +231,20 @@ def main(argv: list[str] | None = None) -> int:
         report_diagnostics()
         return 0
     if not args.sources:
-        print("Nothing to do: give one or more PDF files or folders.", file=sys.stderr)
+        print(
+            "Nothing to do: give one or more XML/PDF files or folders.",
+            file=sys.stderr,
+        )
         return 1
+    input_kind = InputKind(args.input)
     excluded = [Path(args.output)] if args.output else []
-    sources = collect_sources([Path(item) for item in args.sources], excluded)
+    sources = collect_sources(
+        [Path(item) for item in args.sources], excluded, input_kind=input_kind
+    )
     if args.limit:
         sources = sources[: args.limit]
     if not sources:
-        print("No PDF files found.", file=sys.stderr)
+        print(f"No {input_kind.value} files found.", file=sys.stderr)
         return 1
 
     output_root = None if args.dry_run else Path(
@@ -253,6 +293,7 @@ def print_summary(summary: BatchSummary, *, verbose: bool = False) -> None:
 
     print(f"{summary.total} files analyzed")
     print(f"{summary.succeeded} renamed successfully")
+    print(f"{summary.converted} converted from XML")
     print(f"{summary.skipped} skipped")
     print(f"{summary.errors} errors")
     for code, count in summary.failures_by_code().items():

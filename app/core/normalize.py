@@ -50,6 +50,33 @@ def format_br_date(value: date) -> str:
     return f"{value.day:02d}.{value.month:02d}.{value.year:04d}"
 
 
+def parse_iso_date(text: str | None) -> date | None:
+    """Parse the date part of an XML timestamp (``2026-09-16T...``)."""
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def format_br_money(value: Decimal) -> str:
+    """Format a number the way a DANFE prints it: ``1.234,56``.
+
+    Values coming from an XML are plain decimals (``1234.56``); the filename
+    contract uses the Brazilian grouping and decimal comma.
+    """
+    quantized = value.quantize(Decimal("0.01"))
+    sign = "-" if quantized < 0 else ""
+    integer, _, decimals = f"{abs(quantized):.2f}".partition(".")
+    groups: list[str] = []
+    while len(integer) > 3:
+        groups.insert(0, integer[-3:])
+        integer = integer[:-3]
+    groups.insert(0, integer)
+    return f"{sign}{'.'.join(groups)},{decimals}"
+
+
 def looks_like_br_money(text: str) -> bool:
     """Whether ``text`` is printed as a Brazilian currency amount."""
     return _BR_MONEY_RE.match(text) is not None
