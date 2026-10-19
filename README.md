@@ -1,8 +1,10 @@
 # DANFE/NF-e local renamer
 
-A fully offline Windows application that reads NF-e/DANFE PDFs, extracts the
-fields the file name needs and writes **renamed copies** into a fresh folder for
-the batch. The originals are never modified, moved, renamed or deleted.
+A fully offline Windows application for NF-e/NFC-e files. It reads the
+authorized **XML**, generates the **DANFE/DANFCe PDF** and writes the renamed
+copy into a fresh folder for the batch. Existing PDFs can also be renamed on
+their own, and when a PDF and its XML are in the same batch the PDF is the copy
+that is kept. The originals are never modified, moved, renamed or deleted.
 
 Target file name:
 
@@ -26,16 +28,26 @@ them.
 
 ## Fields and where they come from
 
-| Field | Source | Rule |
-|---|---|---|
-| NF number | 44-digit access key | Unsigned NF number is derived from the key, never from proximity to a label; the printed `Nº.:` is used as a cross-check. |
-| Emission date | `DATA DE EMISSÃO` (also `DATA DA EMISSÃO`) | Never `DATA DE SAÍDA`; year and month must agree with the key. |
-| Total value | `VALOR TOTAL DA NOTA` (also `V. TOTAL DA NOTA`) | Never `VALOR TOTAL DOS PRODUTOS` / `V. TOTAL PRODUTOS`; printed with the Brazilian decimal comma. |
-| Emitente | `IDENTIFICAÇÃO DO EMITENTE` block | Cross-checked against the receipt phrase when the document prints one. |
-| Destinatário | `RAZÃO SOCIAL` under the `DESTINATÁRIO / REMETENTE` title | Both names are always read; only the chosen one goes into the file name. |
+The XML is the document SEFAZ authorized, so it is the authoritative source of
+the fields whenever the batch has one. A PDF (existing or generated) is only
+read when there is no XML for that note.
 
-Anything that could make the file name wrong is a failure, reported with a
-reason, and the file is skipped. Nothing is guessed.
+| Field | XML source | PDF source |
+|---|---|---|
+| NF number | `ide/nNF`, cross-checked with the 44-digit access key | the 44-digit access key; the printed `Nº.:` is a cross-check |
+| Emission date | `ide/dhEmi` (`ide/dEmi` in older layouts) | `DATA DE EMISSÃO` (also `DATA DA EMISSÃO`), never `DATA DE SAÍDA` |
+| Total value | `total/ICMSTot/vNF` | `VALOR TOTAL DA NOTA` (also `V. TOTAL DA NOTA`), never `VALOR TOTAL DOS PRODUTOS` |
+| Emitente | `emit/xNome` | `IDENTIFICAÇÃO DO EMITENTE` block, cross-checked with the receipt phrase |
+| Destinatário | `dest/xNome` (may be absent in an NFC-e) | `RAZÃO SOCIAL` under the `DESTINATÁRIO / REMETENTE` title |
+
+Both names are always read; only the chosen one goes into the file name. The
+access key, the document model (NF-e 55 or NFC-e 65) and the emission year and
+month must agree everywhere they are printed.
+
+When a PDF and its XML are in the same batch, the PDF is the copy that is kept
+and the XML provides the name fields; if the PDF cannot be read, the XML
+generates the copy instead. Anything that could make the file name wrong is a
+failure, reported with a reason, and the file is skipped. Nothing is guessed.
 
 ## Running it
 
@@ -43,24 +55,32 @@ Windows, from a source checkout:
 
 ```bash
 # the window (this is what a packaged .exe does by default)
-PYTHONPATH= .venv/Scripts/python.exe run_danfe_renamer.py
+.venv/Scripts/python.exe run_danfe_renamer.py
 
-# a batch, no window: renamed copies go to <input>/DANFE_Renamed/<timestamp>/
-PYTHONPATH= .venv/Scripts/python.exe -m app.cli "C:/notas"
+# a batch from XMLs, no window: the generated PDFs go to
+# <input>/DANFE_Renamed/<timestamp>/
+.venv/Scripts/python.exe -m app.cli "C:/notas"
+
+# only rename PDFs that already exist (the earlier behaviour)
+.venv/Scripts/python.exe -m app.cli "C:/notas" --input pdf
+
+# read XMLs and existing PDFs together
+.venv/Scripts/python.exe -m app.cli "C:/notas" --input both
 
 # name the copies after the recipient (RAZÃO SOCIAL) instead of the issuer
-PYTHONPATH= .venv/Scripts/python.exe -m app.cli "C:/notas" --name-source destinatario
+.venv/Scripts/python.exe -m app.cli "C:/notas" --name-source destinatario
 
 # analyse without writing anything, and keep a report
-PYTHONPATH= .venv/Scripts/python.exe -m app.cli "C:/notas" --dry-run --report C:/tmp/report --verbose
+.venv/Scripts/python.exe -m app.cli "C:/notas" --dry-run --report C:/tmp/report --verbose
 ```
 
-The command line exits `0` when every file was renamed and `1` when anything was
-skipped or failed, so it can be used from a scheduled task.
+The command line exits `0` when every file was renamed or generated and `1` when
+anything was skipped or failed, so it can be used from a scheduled task. XML is
+the default input; `--input pdf` keeps the previous PDF-only behaviour.
 
-The window has an English/Portuguese switch (top right) and the **Name in the
-file name** choice (issuer or recipient); both are stored in
-`%APPDATA%\DANFE_Renamer\settings.json`.
+The window has an English/Portuguese switch (top right), the **Input files**
+choice (XML, PDF or both) and the **Name in the file name** choice (issuer or
+recipient); all are stored in `%APPDATA%\DANFE_Renamer\settings.json`.
 
 ## What every batch produces
 
@@ -72,26 +92,24 @@ file name** choice (issuer or recipient); both are stored in
 └── batch_report.html   (open in a browser to read by eye)
 ```
 
-The batch folder is new on every run; an existing file is never overwritten, and
-a name produced twice in one run is reported as a collision instead.
+An XML input becomes a DANFE (NF-e) or DANFCe (NFC-e) PDF under its final name;
+the XML itself is not copied into the batch folder. The batch folder is new on
+every run; an existing file is never overwritten, and a name produced twice in
+one run is reported as a collision instead.
 
 ## Development
 
 ```bash
-export PYTHONPATH=                      # see the note below, it matters
-/c/ProgramData/anaconda3/python.exe -m venv .venv
+py -3.12 -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements-dev.txt
-.venv/Scripts/python.exe -m pytest      # 143 tests, no confidential data needed
+.venv/Scripts/python.exe -m pytest      # 148 tests, no confidential data needed
 ```
 
-> **Note (this machine):** a user-level `PYTHONPATH` points at an old ClickOnce
-> Python and breaks Anaconda's interpreter, so every command needs `PYTHONPATH=`
-> cleared. A packaged `.exe` is not affected.
-
-Tests build their own DANFE-like PDFs with PyMuPDF
-(`app/tests/fixtures/danfe_builder.py`): real invoices are confidential and are
-never copied into the repository or into test output. Every company name, CNPJ,
-access key and amount in the tests and in the examples above is invented.
+Tests build their own DANFE-like PDFs with PyMuPDF and their own NF-e/NFC-e XMLs
+with the standard library (`app/tests/fixtures/danfe_builder.py`): real invoices
+are confidential and are never copied into the repository or into test output.
+Every company name, CNPJ, access key and amount in the tests and in the examples
+above is invented.
 
 ### Measuring against real documents
 
@@ -99,12 +117,15 @@ Development tools live in `tools/` and are not part of the application:
 
 ```bash
 # phase 1: what is in this folder at all?
-PYTHONPATH= .venv/Scripts/python.exe -m tools.inventory --data-root "C:/notas"
+.venv/Scripts/python.exe -m tools.inventory --data-root "C:/notas"
 
 # phases 2-3: are the extracted values right? Compares them with the NF-e XMLs
 # next to the PDFs, with the receipt stub, and with file names made by hand.
-PYTHONPATH= .venv/Scripts/python.exe -m tools.evaluate_corpus --data-root "C:/notas"
+.venv/Scripts/python.exe -m tools.evaluate_corpus --data-root "C:/notas"
 ```
+
+These tools measure the PDF path. The XML path is exercised by the application
+itself and by the packaged executable check in the release workflow.
 
 Last measured on the real corpus (459 PDFs, 362 of them with a matching XML):
 
@@ -119,12 +140,14 @@ Last measured on the real corpus (459 PDFs, 362 of them with a matching XML):
 ## Building the .exe
 
 ```bash
-PYTHONPATH= .venv/Scripts/pyinstaller.exe --noconfirm --clean packaging/danfe_renamer.spec
+.venv/Scripts/pyinstaller.exe --noconfirm --clean packaging/danfe_renamer.spec
 ```
 
 This produces `dist/DANFE_Renamer.exe`: windowed, no Python needed on the target
-machine, and no network access at runtime. Run it from a folder outside the
-source tree to check the bundle is complete:
+machine, and no network access at runtime. The release workflow also converts a
+synthetic XML with the packaged executable, so missing hidden imports fail the
+release instead of the person using the program. Run it from a folder outside
+the source tree to check the bundle is complete:
 
 ```bash
 DANFE_Renamer.exe "C:/notas" --output "C:/notas/saida" --report "C:/tmp/report"
@@ -164,4 +187,5 @@ GPL-3.0-or-later: see [LICENSE](LICENSE). Copyright (C) 2026 Et-Nyx.
 You may use, study, share and modify this program, commercial use included, as
 long as derivative work is distributed under the same license with its source
 available. The packaged `DANFE_Renamer.exe` is distributed under the same terms,
-and the source it was built from is this repository.
+and the source it was built from is this repository. Runtime dependencies and
+their licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

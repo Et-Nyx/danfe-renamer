@@ -13,7 +13,7 @@ import sys
 
 import _tkinter
 from PyInstaller.depend.bindepend import get_imports
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
 hidden_imports = [
@@ -22,6 +22,10 @@ hidden_imports = [
     "tkinter.filedialog",
     "tkinter.messagebox",
     *collect_submodules("pymupdf"),
+    # Imported lazily by app.xml.render, so the dependency walk cannot see them.
+    "brazilfiscalreport.danfe",
+    "brazilfiscalreport.danfce",
+    "defusedxml.ElementTree",
 ]
 
 
@@ -110,7 +114,8 @@ analysis = Analysis(  # noqa: F821 - provided by PyInstaller
     pathex=[".."],
     hiddenimports=hidden_imports,
     binaries=tcl_tk_binaries(),
-    excludes=["matplotlib", "numpy", "pandas", "scipy", "PIL", "pytest"],
+    datas=collect_data_files("brazilfiscalreport"),
+    excludes=["matplotlib", "numpy", "pandas", "scipy", "pytest"],
     noarchive=False,
 )
 pyz = PYZ(analysis.pure)  # noqa: F821

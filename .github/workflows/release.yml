@@ -57,6 +57,21 @@ jobs:
           grep -q "tkinter: Tk" danfe_renamer_diagnostics.txt
           grep -q "window: opens" danfe_renamer_diagnostics.txt
           grep -q "the window accepts drops" danfe_renamer_diagnostics.txt
+          grep -q "xml_renderer: brazilfiscalreport" danfe_renamer_diagnostics.txt
+        shell: bash
+
+      # The packaged converter is exercised outside the source tree, so a
+      # missing data file or hidden import fails the release here instead of on
+      # the machine of the person who downloaded the .exe.
+      - name: Verify the executable converts an XML
+        run: |
+          mkdir -p smoke/in
+          python -c "from app.tests.fixtures.danfe_builder import write_nfe_xml; write_nfe_xml('smoke/in/nfe.xml')"
+          ./dist/DANFE_Renamer.exe --input xml smoke/in --output smoke/out
+          pdf=$(find smoke/out -name '*.pdf' -print -quit)
+          test -n "$pdf"
+          echo "converted: $pdf"
+          ls -l "$pdf"
         shell: bash
 
       - name: Name the asset and hash it
