@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import shutil
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -93,25 +93,29 @@ def a_batch_with_one_file(tmp_path):
 
 
 def held_by_something_else(monkeypatch, times: int = 99):
-    """Make the metadata step fail the way a scanner holding a fresh file does.
+    """Make a copy fail the way something holding the fresh file does.
 
-    ``shutil.copy2`` writes the bytes and copies the metadata after them, so a
-    failure here is a file that is already on disk - the shape of this bug.
+    The bytes land and the step after them fails: a file on disk with the run
+    reporting a failure, which is the shape of the bug. It is simulated at
+    ``shutil.copy2`` and not inside it, because 3.12 copies data and metadata in
+    a single ``CopyFile2`` call on Windows while 3.11 goes through
+    ``copyfile`` and ``copystat`` - the internal steps differ by version and are
+    not this module's to depend on.
     """
-    real = shutil.copystat
     calls = []
 
-    def copystat(src, dst, **kwargs):
+    def copy2(src, dst, **kwargs):
         calls.append(dst)
+        Path(dst).write_bytes(Path(src).read_bytes())
         if len(calls) <= times:
             raise OSError(
                 32,
                 "The process cannot access the file because it is being used "
                 "by another process",
             )
-        return real(src, dst, **kwargs)
+        return str(dst)
 
-    monkeypatch.setattr(app_filesystem.shutil, "copystat", copystat)
+    monkeypatch.setattr(app_filesystem.shutil, "copy2", copy2)
     monkeypatch.setattr(app_filesystem, "COPY_RETRY_PAUSE_SECONDS", 0)
     return calls
 
@@ -157,10 +161,8 @@ def test_a_truncated_copy_is_refused_and_taken_away(tmp_path, monkeypatch):
     source, batch, destination = a_batch_with_one_file(tmp_path)
 
     def short(src, dst, **kwargs):
-        dst = str(dst)
-        with open(dst, "wb") as handle:
-            handle.write(source.read_bytes()[:10])
-        return dst
+        Path(dst).write_bytes(Path(src).read_bytes()[:10])
+        return str(dst)
 
     monkeypatch.setattr(app_filesystem.shutil, "copy2", short)
     monkeypatch.setattr(app_filesystem, "COPY_RETRY_PAUSE_SECONDS", 0)
