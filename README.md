@@ -76,7 +76,9 @@ Windows, from a source checkout:
 
 The command line exits `0` when every file was renamed or generated and `1` when
 anything was skipped or failed, so it can be used from a scheduled task. XML is
-the default input; `--input pdf` keeps the previous PDF-only behaviour.
+the default input; `--input pdf` keeps the previous PDF-only behaviour, and
+`--language en|pt` picks the language of the reports - by default the one chosen
+in the window, so a scheduled run reports in the language its reader reads.
 
 The window has an English/Portuguese switch (top right), the **Input files**
 choice (XML, PDF or both) and the **Name in the file name** choice (issuer or
@@ -97,12 +99,19 @@ the XML itself is not copied into the batch folder. The batch folder is new on
 every run; an existing file is never overwritten, and a name produced twice in
 one run is reported as a collision instead.
 
+The three reports are written in the language chosen in the window. Two values
+never change with it - `status` and `failure_code` - so a script can key on them;
+`failure_message` is the sentence for a person, and `reason` keeps the library's
+own words for whoever investigates. A copy that fails leaves nothing behind: a
+write something else is holding is retried before giving up, and a failed attempt
+is removed, so the folder holds only files the report accounts for.
+
 ## Development
 
 ```bash
 py -3.12 -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements-dev.txt
-.venv/Scripts/python.exe -m pytest      # 166 tests, no confidential data needed
+.venv/Scripts/python.exe -m pytest      # 196 tests, no confidential data needed
 ```
 
 If every Python command on the machine dies with an import error from an old
@@ -182,7 +191,9 @@ Rules that keep it trustworthy:
 - `app/core/validator.py` decides PASS/WARN/FAIL and produces the only record a
   file name may be built from.
 - `app/core/filesystem.py` owns the safety invariant: copy only, verify the copy,
-  never overwrite, stay inside the batch folder.
+  never overwrite, stay inside the batch folder, retry a write something else is
+  holding for a moment, and leave nothing behind when a copy fails - a folder must
+  hold only files a report accounts for.
 - Adding a layout means adding a parser in `app/extractors/` and listing it in
   `registry.py`; nothing else changes.
 
