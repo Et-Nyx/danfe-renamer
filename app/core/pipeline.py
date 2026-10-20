@@ -28,6 +28,7 @@ from ..reporting.report import write_reports
 from ..xml.invoice import XmlInvoiceError, inspect_xml
 from ..xml.render import XmlRenderError, render_xml_to_pdf
 from .detector import UnsupportedDocument, detect
+from .wording import DEFAULT_LANGUAGE
 from .filesystem import (
     OutputCollision,
     OutputWriteError,
@@ -214,12 +215,14 @@ def run_batch(
     progress: ProgressCallback | None = None,
     timestamp: datetime | None = None,
     name_source: NameSource = NameSource.EMITENTE,
+    language: str = DEFAULT_LANGUAGE,
 ) -> BatchSummary:
     """Process a batch of PDFs and XMLs and write the successful outputs.
 
     With ``copy_files=False`` the run only analyses and reports: no directory is
     created and nothing is written. ``name_source`` decides which printed name
-    the file names carry.
+    the file names carry, and ``language`` is the one the reports are written in;
+    the stable values in them are the same in every language.
 
     Cyclic garbage collection is paused for the duration of the batch; see
     :func:`_pause_garbage_collection` for why that matters when a window runs the
@@ -233,6 +236,7 @@ def run_batch(
             progress=progress,
             timestamp=timestamp,
             name_source=name_source,
+            language=language,
         )
 
 
@@ -267,6 +271,7 @@ def _run_batch(
     progress: ProgressCallback | None = None,
     timestamp: datetime | None = None,
     name_source: NameSource = NameSource.EMITENTE,
+    language: str = DEFAULT_LANGUAGE,
 ) -> BatchSummary:
     started_at = timestamp or datetime.now()
     unique_sources = _deduplicate(sources)
@@ -408,7 +413,7 @@ def _run_batch(
 
     summary.finished_at = datetime.now()
     if batch_directory is not None:
-        summary.report_paths = write_reports(summary)
+        summary.report_paths = write_reports(summary, language=language)
     return summary
 
 

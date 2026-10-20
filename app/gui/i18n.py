@@ -1,8 +1,12 @@
-"""Interface strings, in English (default) and Portuguese.
+"""The window's own strings, in English (default) and Portuguese.
 
-Every piece of text the window shows comes from here, so adding a language is
-adding a dictionary. Keys are shared across both dictionaries; a test asserts
-that, so a missing translation cannot reach the user as a raw key.
+Everything the window shows comes from here, so adding a language is adding a
+dictionary. Keys are shared across both dictionaries; a test asserts that, so a
+missing translation cannot reach the user as a raw key.
+
+Sentences about failures, and the batch counts every report also prints, come
+from :mod:`app.core.wording` instead: those are reused, and a sentence kept in two
+tables drifts.
 """
 
 from __future__ import annotations
@@ -10,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..core.models import InputKind, NameSource
+from ..core.wording import SUMMARY
+from ..core.wording import message as failure_message
 
 DEFAULT_LANGUAGE = "en"
 
@@ -56,16 +62,15 @@ STRINGS: dict[str, dict[str, str]] = {
         "processing": "Processing",
         "of": "of",
         "safety_note": "Originals are never modified.",
-        "selected_files": "{count} file(s) selected",
+        "selected_files": "{count} files selected",
+        "selected_files_one": "{count} file selected",
         "no_files": "No files selected yet.",
         "no_files_alert": "Choose the PDF files or the folder you want to process first.",
         "report_title": "Batch finished",
-        "analyzed": "{count} files analyzed",
-        "renamed": "{count} renamed successfully",
-        "converted": "{count} converted from XML",
-        "skipped": "{count} skipped",
-        "errors": "{count} errors",
-        "failures_by_reason": "Why files were skipped",
+        "batch_duration": "Whole batch: {seconds:.1f} s",
+        "failures_skipped": "Why files were skipped",
+        "failures_errored": "Why files failed",
+        "failures_mixed": "Why files were skipped or failed",
         "open_output": "Open output folder",
         "view_details": "View details",
         "process_another": "Process another batch",
@@ -96,6 +101,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "field_destination": "Copied to",
         "field_warnings": "Notes",
         "field_duration": "Took",
+        "field_detail": "Cause",
         "select_row_hint": "Select a file to see its details; right-click to open it or copy its name.",
         "open_original": "Open original file",
         "open_copy": "Open renamed copy",
@@ -134,16 +140,15 @@ STRINGS: dict[str, dict[str, str]] = {
         "processing": "Processando",
         "of": "de",
         "safety_note": "Os arquivos originais nunca são modificados.",
-        "selected_files": "{count} arquivo(s) selecionado(s)",
+        "selected_files": "{count} arquivos selecionados",
+        "selected_files_one": "{count} arquivo selecionado",
         "no_files": "Nenhum arquivo selecionado ainda.",
         "no_files_alert": "Escolha primeiro os PDFs ou a pasta que deseja processar.",
         "report_title": "Lote concluído",
-        "analyzed": "{count} arquivos analisados",
-        "renamed": "{count} renomeados com sucesso",
-        "converted": "{count} convertidos de XML",
-        "skipped": "{count} ignorados",
-        "errors": "{count} erros",
-        "failures_by_reason": "Motivos dos arquivos ignorados",
+        "batch_duration": "Lote inteiro: {seconds:.1f} s",
+        "failures_skipped": "Motivos dos arquivos ignorados",
+        "failures_errored": "Motivos dos erros",
+        "failures_mixed": "Motivos dos arquivos ignorados ou com erro",
         "open_output": "Abrir pasta de saída",
         "view_details": "Ver detalhes",
         "process_another": "Processar outro lote",
@@ -174,6 +179,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "field_destination": "Copiado para",
         "field_warnings": "Observações",
         "field_duration": "Levou",
+        "field_detail": "Causa",
         "select_row_hint": "Selecione um arquivo para ver os detalhes; clique com o botão direito para abrir ou copiar o nome.",
         "open_original": "Abrir arquivo original",
         "open_copy": "Abrir cópia renomeada",
@@ -191,6 +197,11 @@ STRINGS: dict[str, dict[str, str]] = {
         "unknown_language": "O idioma {code!r} não está disponível.",
     },
 }
+
+# The batch counts are printed by the window and by every report, so they live in
+# one table in :mod:`app.core.wording`: a sentence translated in two places drifts.
+for _language, _table in SUMMARY.items():
+    STRINGS.setdefault(_language, {}).update(_table)
 
 
 class Translator:
@@ -215,9 +226,20 @@ class Translator:
         self._listeners.append(listener)
 
     def __call__(self, key: str, **values) -> str:
-        """Look up ``key`` in the current language, filling in any placeholders."""
-        template = STRINGS[self.language].get(key) or STRINGS[DEFAULT_LANGUAGE][key]
+        """Look up ``key`` in the current language, filling in any placeholders.
+
+        A key given a ``count`` picks the singular wording when the language has
+        one: ``errors`` says "errors", ``errors_one`` says "error". Both
+        languages here inflect at one, so one rule covers them.
+        """
+        template = self._template(key, values.get("count"))
         return template.format(**values) if values else template
+
+    def _template(self, key: str, count: object) -> str:
+        table = STRINGS[self.language]
+        if count == 1 and f"{key}_one" in table:
+            return table[f"{key}_one"]
+        return table.get(key) or STRINGS[DEFAULT_LANGUAGE][key]
 
 
 @dataclass(frozen=True)
@@ -230,6 +252,9 @@ class SummaryText:
     skipped: str
     errors: str
     failures: tuple[tuple[str, int], ...]
+    #: Heading over :attr:`failures`, naming what actually went wrong.
+    failure_heading: str
+    duration: str
 
 
 def summarise(summary, translate: Translator) -> SummaryText:
@@ -247,18 +272,40 @@ def summarise(summary, translate: Translator) -> SummaryText:
         skipped=translate("skipped", count=summary.skipped),
         errors=translate("errors", count=summary.errors),
         failures=failures,
+        failure_heading=failure_heading(summary, translate),
+        duration=translate("batch_duration", seconds=_elapsed_seconds(summary)),
     )
 
 
-def translate_failure(code, translate: Translator) -> str:
-    """A failure code as a sentence the user can act on.
+def _elapsed_seconds(summary) -> float:
+    """How long the batch took, so a fast run reads as fast, not as skipped work."""
+    if summary.started_at is None or summary.finished_at is None:  # pragma: no cover
+        return 0.0
+    return max(0.0, (summary.finished_at - summary.started_at).total_seconds())
 
-    The codes are stable and identical in every language; the message the parser
-    recorded is what gets shown, so a failure never appears as a bare code.
+
+def failure_heading(summary, translate: Translator) -> str:
+    """Name the heading after what actually went wrong.
+
+    Errors are not skips. A batch whose only failures are errors, headed "why
+    files were skipped", contradicts the count right above it saying nothing
+    was skipped - and that is what leaves a person unable to account for a file.
     """
-    from ..core.models import FAILURE_MESSAGES
+    if summary.errors and summary.skipped:
+        return translate("failures_mixed")
+    if summary.errors:
+        return translate("failures_errored")
+    return translate("failures_skipped")
 
-    return FAILURE_MESSAGES.get(code, translate("errors", count=1))
+
+def translate_failure(code, translate: Translator) -> str:
+    """A failure code as a sentence the user can act on, in their language.
+
+    The codes are stable and identical in every language; the sentence is not.
+    A code this table does not know comes back as the code, never as a sentence
+    about something else.
+    """
+    return failure_message(code, translate.language)
 
 
 def describe_name_source(value, translate: Translator) -> str:

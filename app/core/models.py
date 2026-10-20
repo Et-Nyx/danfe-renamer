@@ -12,6 +12,7 @@ from enum import Enum
 from pathlib import Path
 
 from ..pdf.access_key import AccessKey
+from .wording import message as failure_message
 
 
 class FailureCode(str, Enum):
@@ -43,32 +44,11 @@ class FailureCode(str, Enum):
     UNEXPECTED_EXTRACTION_ERROR = "UNEXPECTED_EXTRACTION_ERROR"
 
 
-#: Friendly, user-facing wording for each failure code.
+#: Friendly, user-facing wording for each failure code, in English. A window or a
+#: report in another language asks :mod:`~app.core.wording` instead, so this map
+#: is the one that never changes language.
 FAILURE_MESSAGES: dict[FailureCode, str] = {
-    FailureCode.UNSUPPORTED_FORMAT: "Could not identify a supported DANFE layout",
-    FailureCode.AMBIGUOUS_FORMAT: "More than one DANFE layout matched this document",
-    FailureCode.MISSING_ACCESS_KEY: "NF-e access key not found",
-    FailureCode.ACCESS_KEY_AMBIGUOUS: "More than one access key found in the document",
-    FailureCode.INVALID_ACCESS_KEY: "Access key is not valid",
-    FailureCode.NF_NUMBER_INVALID: "NF number could not be derived from the access key",
-    FailureCode.NF_NUMBER_CONFLICT: "Printed NF number disagrees with the access key",
-    FailureCode.EMISSION_DATE_NOT_FOUND: "Emission date not found",
-    FailureCode.EMISSION_DATE_CONFLICT: "Emission date disagrees with the access key",
-    FailureCode.TOTAL_VALUE_NOT_FOUND: "VALOR TOTAL DA NOTA not found",
-    FailureCode.TOTAL_VALUE_AMBIGUOUS: "Total value is ambiguous or implausible",
-    FailureCode.ISSUER_NOT_FOUND: "Issuer name could not be identified confidently",
-    FailureCode.RECIPIENT_NOT_FOUND: "Recipient name could not be identified confidently",
-    FailureCode.INVALID_FILENAME: "Generated filename is not usable on Windows",
-    FailureCode.DUPLICATE_NOTE: "This note is already in the batch under another name",
-    FailureCode.OUTPUT_COLLISION: "Output filename already exists",
-    FailureCode.OUTPUT_WRITE_ERROR: "Could not write the renamed copy",
-    FailureCode.PDF_READ_ERROR: "PDF could not be read",
-    FailureCode.PDF_ENCRYPTED: "PDF is password protected",
-    FailureCode.PDF_GENERATION_ERROR: "PDF could not be generated from the XML",
-    FailureCode.XML_READ_ERROR: "XML could not be read",
-    FailureCode.XML_UNSUPPORTED: "XML is not an NF-e or NFC-e document",
-    FailureCode.XML_NOT_AUTHORIZED: "XML does not carry an authorized NF-e/NFC-e",
-    FailureCode.UNEXPECTED_EXTRACTION_ERROR: "Unexpected error while reading the document",
+    code: failure_message(code) for code in FailureCode
 }
 
 

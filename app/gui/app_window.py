@@ -23,7 +23,15 @@ from tkinter import filedialog, messagebox, ttk
 
 from .. import __version__
 from ..cli import collect_sources, default_output_root
-from ..core.models import BatchSummary, FileOutcome, InputKind, NameSource, Status
+from ..core.wording import message as failure_message
+from ..core.models import (
+    FAILURE_MESSAGES,
+    BatchSummary,
+    FileOutcome,
+    InputKind,
+    NameSource,
+    Status,
+)
 from ..core.pipeline import run_batch
 from .i18n import (
     INPUT_KIND_KEYS,
@@ -139,6 +147,37 @@ def reveal_path(path: Path) -> None:
         subprocess.Popen(["xdg-open", str(folder)])
 
 
+def failure_sentence(outcome: FileOutcome, language: str) -> str:
+    """What went wrong, short enough for a column and in the reader's language.
+
+    The recorded ``reason`` is not what goes here. For XML, PDF and write
+    failures it is the library's own words - a path and a Windows error code -
+    which is the wrong language and far too long for a column; the detail pane
+    is where that belongs. A failure without a code keeps its reason.
+    """
+    if outcome.failure_code is None:
+        return (outcome.reason or "").strip()
+    return failure_message(outcome.failure_code, language)
+
+
+def outcome_cause(outcome: FileOutcome) -> str:
+    """What the layer recorded beyond the catalogue sentence for this code.
+
+    ``reason`` is the domain layer's own words, and it is one of three things:
+    the catalogue sentence, that sentence followed by the specific detail, or -
+    from the filesystem and XML layers - the detail alone. Whatever the
+    catalogue already says is dropped, because the rest is the whole point: a
+    locked file, a value that disagrees with the access key.
+    """
+    recorded = (outcome.reason or "").strip()
+    if not recorded:
+        return ""
+    catalogue = FAILURE_MESSAGES.get(outcome.failure_code, "") if outcome.failure_code else ""
+    if catalogue and recorded.startswith(catalogue):
+        recorded = recorded[len(catalogue) :].strip()
+    return recorded
+
+
 def build_window() -> "RenamerWindow":
     """Create the main window, with drag-and-drop when this machine supports it."""
     root = create_root()
@@ -177,7 +216,26 @@ class RenamerWindow:
         self.frame = ttk.Frame(self.root, padding=16)
         self.frame.pack(fill="both", expand=True)
 
-        header = ttk.Frame(self.frame)
+        # The result block is created first and, when a batch finishes, packed
+        # first as well - from the bottom. Tk hands out space in packing order
+        # and squeezes whatever comes last, and this frame is where the error
+        # count lives: the one line that says a file was lost. Everything under
+        # it here is scrollable or a note, so it can yield; the count cannot.
+        self.result_frame = ttk.LabelFrame(self.frame, padding=10)
+        self.result_labels: list[ttk.Label] = []
+        for _ in range(6):
+            label = ttk.Label(self.result_frame)
+            label.pack(anchor="w")
+            self.result_labels.append(label)
+        self.failure_label = ttk.Label(self.result_frame)
+        self.failure_label.pack(anchor="w", pady=(6, 0))
+        self.duration_label = ttk.Label(self.result_frame, foreground="#555555")
+        self.duration_label.pack(anchor="w", pady=(4, 0))
+        self.output_label = ttk.Label(self.result_frame, foreground="#555555")
+        self.output_label.pack(anchor="w", pady=(4, 0))
+
+        self.header = ttk.Frame(self.frame)
+        header = self.header
         header.pack(fill="x")
         self.title_label = ttk.Label(header, font=("Segoe UI", 16, "bold"))
         self.title_label.pack(side="left")
@@ -215,7 +273,9 @@ class RenamerWindow:
 
         list_frame = ttk.Frame(self.frame)
         list_frame.pack(fill="both", expand=True, pady=10)
-        self.file_list = tk.Listbox(list_frame, selectmode="extended", activestyle="none")
+        self.file_list = tk.Listbox(
+            list_frame, selectmode="extended", activestyle="none", height=6
+        )
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.file_list.yview)
         self.file_list.configure(yscrollcommand=scrollbar.set)
         self.file_list.pack(side="left", fill="both", expand=True)
@@ -239,17 +299,6 @@ class RenamerWindow:
         self.details_button.pack(side="left")
         self.another_button = ttk.Button(actions, command=self.reset_for_next_batch)
         self.another_button.pack(side="left", padx=6)
-
-        self.result_frame = ttk.LabelFrame(self.frame, padding=10)
-        self.result_labels: list[ttk.Label] = []
-        for _ in range(5):
-            label = ttk.Label(self.result_frame)
-            label.pack(anchor="w")
-            self.result_labels.append(label)
-        self.failure_label = ttk.Label(self.result_frame)
-        self.failure_label.pack(anchor="w", pady=(6, 0))
-        self.output_label = ttk.Label(self.result_frame, foreground="#555555")
-        self.output_label.pack(anchor="w", pady=(4, 0))
 
         self.safety_label = ttk.Label(self.frame, foreground="#1a7f37")
         self.safety_label.pack(fill="x", pady=(10, 0))
@@ -355,7 +404,6 @@ class RenamerWindow:
         self.open_output_button.configure(text=t("open_output"))
         self.details_button.configure(text=t("view_details"))
         self.another_button.configure(text=t("process_another"))
-        self.failure_label.configure(text=t("failures_by_reason"))
         self.safety_label.configure(text=t("safety_note"))
         self.language_box.set(LANGUAGE_NAMES[self.translate.language])
         self._refresh_selection()
@@ -466,17 +514,22 @@ class RenamerWindow:
         self._refresh_result_visibility()
         sources = list(self.selected)
         output_root = default_output_root(sources)
-        # Read the choice here, on the Tk thread; the worker only gets the value.
+        # Read the choices here, on the Tk thread; the worker only gets values.
         name_source = self.name_source
+        language = self.translate.language
         thread = threading.Thread(
             target=self._run_batch,
-            args=(sources, output_root, name_source),
+            args=(sources, output_root, name_source, language),
             daemon=True,
         )
         thread.start()
 
     def _run_batch(
-        self, sources: list[Path], output_root: Path, name_source: NameSource
+        self,
+        sources: list[Path],
+        output_root: Path,
+        name_source: NameSource,
+        language: str,
     ) -> None:
         """Worker thread: never touches Tk directly, only the queue."""
         try:
@@ -485,6 +538,7 @@ class RenamerWindow:
                 output_root,
                 progress=self._report_progress,
                 name_source=name_source,
+                language=language,
             )
         except Exception as exc:  # pragma: no cover - unexpected failure
             self._events.put(("error", f"{type(exc).__name__}: {exc}"))
@@ -527,12 +581,19 @@ class RenamerWindow:
             )
 
     def _refresh_result_visibility(self) -> None:
+        """Show the result block only when there is one, and never below the fold.
+
+        Packing it again puts it back at the front of the order, so the room it
+        needs comes off the scrollable file list rather than the other way round.
+        """
         if self.summary is None:
             self.result_frame.pack_forget()
             self.open_output_button.state(["disabled"])
             self.details_button.state(["disabled"])
             return
-        self.result_frame.pack(fill="x", pady=(10, 0))
+        self.result_frame.pack(
+            fill="x", pady=(10, 0), side="bottom", before=self.header
+        )
         self.open_output_button.state(
             ["!disabled"] if self.summary.output_directory else ["disabled"]
         )
@@ -550,12 +611,13 @@ class RenamerWindow:
                 lines.converted,
                 lines.skipped,
                 lines.errors,
+                lines.duration,
             ),
         ):
             label.configure(text=text)
         if lines.failures:
             self.failure_label.configure(
-                text=self.translate("failures_by_reason")
+                text=lines.failure_heading
                 + ": "
                 + "; ".join(f"{name} ({count})" for name, count in lines.failures)
             )
@@ -638,7 +700,7 @@ class RenamerWindow:
                 values=(
                     status,
                     outcome.target_filename or "-",
-                    outcome.reason or "",
+                    failure_sentence(outcome, self.translate.language),
                 ),
             )
 
@@ -776,8 +838,11 @@ class RenamerWindow:
             rows.append(
                 f"{t('column_reason')}: "
                 + translate_failure(outcome.failure_code, t)
-                + (f" ({outcome.failure_code.value})" if outcome.reason else "")
+                + f" ({outcome.failure_code.value})"
             )
+            cause = outcome_cause(outcome)
+            if cause:
+                rows.append(f"{t('field_detail')}: {cause}")
         rows += [
             f"{t('field_parser')}: {outcome.parser_id or '-'}",
             f"{t('field_source_type')}: {outcome.source_type or '-'}",

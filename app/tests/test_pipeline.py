@@ -41,6 +41,69 @@ def test_batch_writes_renamed_copies_and_leaves_originals(tmp_path):
         assert path.exists()
 
 
+def _csv_rows(summary):
+    """The CSV report as rows, keyed by column."""
+    import csv
+
+    from app.reporting.report import CSV_DELIMITER
+
+    with summary.report_paths["csv"].open(encoding="utf-8-sig", newline="") as handle:
+        return list(csv.DictReader(handle, delimiter=CSV_DELIMITER))
+
+
+def _unreadable(path):
+    """A file that goes through the batch and fails, so a report has a failure in it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"not a pdf at all")
+    return path
+
+
+def test_the_reports_are_written_in_the_language_they_are_asked_for(tmp_path):
+    """The sentences follow the language; what a machine reads does not."""
+    broken = _unreadable(tmp_path / "in" / "quebrado.pdf")
+
+    portuguese = _csv_rows(run_batch([broken], tmp_path / "pt", language="pt"))[0]
+    english = _csv_rows(run_batch([broken], tmp_path / "en", language="en"))[0]
+
+    assert portuguese["failure_message"] == "Não foi possível ler o PDF"
+    assert english["failure_message"] == "PDF could not be read"
+    # The two columns a machine keys on say the same thing either way, and the
+    # recorded detail is left exactly as the layer wrote it.
+    assert portuguese["failure_code"] == english["failure_code"] == "PDF_READ_ERROR"
+    assert portuguese["status"] == english["status"] == Status.SKIPPED.value
+    assert portuguese["reason"] == english["reason"]
+    assert portuguese["reason"], "the library's own words are kept for support"
+
+
+def test_an_english_report_is_still_the_default(tmp_path):
+    """A caller that says nothing gets what it always got."""
+    broken = _unreadable(tmp_path / "in" / "quebrado.pdf")
+    row = _csv_rows(run_batch([broken], tmp_path / "out"))[0]
+    assert row["failure_message"] == "PDF could not be read"
+
+
+def test_the_html_report_is_in_the_language_too(tmp_path):
+    broken = _unreadable(tmp_path / "in" / "quebrado.pdf")
+    summary = run_batch([broken], tmp_path / "out", language="pt")
+
+    document = summary.report_paths["html"].read_text(encoding="utf-8")
+    assert '<html lang="pt">' in document
+    assert "Motivos das falhas" in document
+    assert "Arquivo original" in document
+    assert "Não foi possível ler o PDF" in document
+    assert "Source file" not in document, "no English heading left in it"
+
+
+def test_the_json_report_says_which_language_it_is_in(tmp_path):
+    broken = _unreadable(tmp_path / "in" / "quebrado.pdf")
+    summary = run_batch([broken], tmp_path / "out", language="pt")
+
+    payload = json.loads(summary.report_paths["json"].read_text(encoding="utf-8"))
+    assert payload["language"] == "pt"
+    assert list(payload["failures_by_code"]) == ["PDF_READ_ERROR"]
+    assert list(payload["failures_by_message"]) == ["Não foi possível ler o PDF"]
+
+
 def test_batch_report_lists_the_agreed_columns(tmp_path):
     source = _make_danfe(tmp_path / "in" / "nota.pdf")
     summary = run_batch([source], tmp_path / "out")
@@ -49,6 +112,8 @@ def test_batch_report_lists_the_agreed_columns(tmp_path):
     assert header == [
         "source_filename",
         "status",
+        "failure_code",
+        "failure_message",
         "parser",
         "access_key",
         "nf_number",

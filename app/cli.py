@@ -29,6 +29,8 @@ from pathlib import Path
 from . import __version__
 from .core.models import BatchSummary, InputKind, NameSource, Status
 from .core.pipeline import run_batch
+from .core.wording import LANGUAGES
+from .gui.settings import load_language
 from .reporting.report import write_reports
 
 DEFAULT_OUTPUT_DIR_NAME = "DANFE_Renamed"
@@ -220,6 +222,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--limit", type=int, help="process at most N files")
     parser.add_argument(
+        "--language",
+        choices=list(LANGUAGES),
+        help=(
+            "language of the reports; by default the one chosen in the window, "
+            "so a scheduled run reports in the language its reader reads"
+        ),
+    )
+    parser.add_argument(
         "--verbose", action="store_true", help="print one line per file"
     )
     return parser
@@ -250,17 +260,21 @@ def main(argv: list[str] | None = None) -> int:
     output_root = None if args.dry_run else Path(
         args.output or default_output_root(sources)
     )
+    # The reports are read by the person who set the application up, so they come
+    # out in the language that person chose, wherever the batch is run from.
+    language = args.language or load_language()
     summary = run_batch(
         sources,
         output_root,
         copy_files=not args.dry_run,
         progress=_progress_printer() if not args.verbose else None,
         name_source=NameSource(args.name_source),
+        language=language,
     )
     extra_report_directory: Path | None = None
     if args.report:
         extra_report_directory = Path(args.report)
-        write_reports(summary, directory=extra_report_directory)
+        write_reports(summary, directory=extra_report_directory, language=language)
 
     print_summary(summary, verbose=args.verbose)
     if extra_report_directory is not None:

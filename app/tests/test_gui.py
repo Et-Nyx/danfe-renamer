@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -86,8 +87,8 @@ def test_summary_text_is_in_the_selected_language():
     from app.core.models import BatchSummary, FileOutcome
 
     summary = BatchSummary(
-        started_at=None,  # type: ignore[arg-type]
-        finished_at=None,  # type: ignore[arg-type]
+        started_at=datetime(2026, 10, 20, 11, 0, 0),
+        finished_at=datetime(2026, 10, 20, 11, 0, 12),
         outcomes=[
             FileOutcome(source_path=None, status=Status.SUCCESS),  # type: ignore[arg-type]
             FileOutcome(
@@ -107,6 +108,99 @@ def test_summary_text_is_in_the_selected_language():
     assert portuguese.converted == "0 convertidos de XML"
     assert portuguese.failures[0][1] == 1
     assert "VALOR TOTAL DA NOTA" in portuguese.failures[0][0]
+
+
+# ------------------------------------------------- what the summary is saying
+#
+# The window's own counts are how a person checks that nothing was lost. A batch
+# of 33 files that renamed 32 and skipped 0 could not be accounted for, because
+# the line saying one had failed was squeezed out of the window and the heading
+# over the reasons talked about skips.
+
+
+COUNT_KEYS = ("analyzed", "renamed", "converted", "skipped", "errors", "selected_files")
+
+
+def summary_of(total: int, *, errors: int = 0, skipped: int = 0, seconds: float = 12.4):
+    """A batch of ``total`` files, of which the named ones did not succeed."""
+    from app.core.models import BatchSummary, FileOutcome
+
+    good = total - errors - skipped
+    outcomes = [
+        FileOutcome(source_path=Path(f"n{i}.xml"), status=Status.SUCCESS, generated=True,
+                    destination_path=Path(f"out{i}.pdf"))
+        for i in range(good)
+    ]
+    outcomes += [
+        FileOutcome(source_path=Path(f"e{i}.xml"), status=Status.ERROR,
+                    failure_code=FailureCode.OUTPUT_WRITE_ERROR, reason="could not copy")
+        for i in range(errors)
+    ]
+    outcomes += [
+        FileOutcome(source_path=Path(f"s{i}.xml"), status=Status.SKIPPED,
+                    failure_code=FailureCode.TOTAL_VALUE_NOT_FOUND, reason="no total")
+        for i in range(skipped)
+    ]
+    return BatchSummary(
+        started_at=datetime(2026, 10, 20, 11, 0, 0),
+        finished_at=datetime(2026, 10, 20, 11, 0, 0) + timedelta(seconds=seconds),
+        outcomes=outcomes,
+    )
+
+
+def test_every_count_says_one_in_every_language():
+    """A key used with a count needs its singular, or "1 erros" reaches the user."""
+    for code, table in STRINGS.items():
+        for key in COUNT_KEYS:
+            assert f"{key}_one" in table, f"{code}.{key} has no singular"
+
+
+def test_one_of_anything_is_written_in_the_singular():
+    assert Translator("pt")("errors", count=1) == "1 erro"
+    assert Translator("pt")("errors", count=2) == "2 erros"
+    assert Translator("pt")("analyzed", count=1) == "1 arquivo analisado"
+    assert Translator("pt")("skipped", count=0) == "0 ignorados"
+    assert Translator("en")("errors", count=1) == "1 error"
+    assert Translator("en")("analyzed", count=1) == "1 file analyzed"
+    assert Translator("en")("selected_files", count=1) == "1 file selected"
+
+
+def test_the_three_things_the_window_counted_add_up():
+    """Analyzed = renamed + skipped + errors, the way the lines read."""
+    window = Translator("pt")
+    summary = summary_of(33, errors=1)
+    lines = summarise(summary, window)
+    assert lines.analyzed == "33 arquivos analisados"
+    assert lines.renamed == "32 renomeados com sucesso"
+    assert lines.skipped == "0 ignorados"
+    assert lines.errors == "1 erro", "the line that accounts for the missing file"
+
+
+def test_an_error_is_never_headed_as_a_skip():
+    """"0 ignorados" above "why files were skipped" is the contradiction."""
+    for translate in (Translator("en"), Translator("pt")):
+        headed = summarise(summary_of(33, errors=1), translate)
+        assert "skipped" not in headed.failure_heading.lower()
+        assert "ignorados" not in headed.failure_heading
+
+        only_skips = summarise(summary_of(2, skipped=1), translate)
+        assert "skipped" in only_skips.failure_heading.lower() or (
+            "ignorados" in only_skips.failure_heading
+        )
+
+
+def test_the_heading_covers_both_kinds_when_both_happened():
+    translate = Translator("pt")
+    headed = summarise(summary_of(4, errors=1, skipped=1), translate)
+    assert headed.failure_heading == translate("failures_mixed")
+    assert "ignorados" in headed.failure_heading
+    assert "erro" in headed.failure_heading
+
+
+def test_the_summary_says_how_long_the_batch_took():
+    """A run that finishes in seconds should read as fast, not as skipped work."""
+    assert "12.4" in summarise(summary_of(4, seconds=12.4), Translator("pt")).duration
+    assert "12.4" in summarise(summary_of(4, seconds=12.4), Translator("en")).duration
 
 
 @pytest.fixture(scope="session")
@@ -644,6 +738,89 @@ def test_the_context_menu_offers_what_the_buttons_do(window, tmp_path):
     ]
 
 
+def test_the_result_block_is_laid_out_before_the_file_list(window, tmp_path):
+    """Tk squeezes whatever it packs last, and the error count is packed here.
+
+    The window can be made shorter than its contents. The file list scrolls; the
+    count of failures does not, so the list has to be the one that gives way. With
+    the block packed last, "1 error" was the first line to leave the screen.
+    """
+    source = tmp_path / "in" / "nota.pdf"
+    write_danfe(source)
+    window.input_kind_buttons[InputKind.PDF].invoke()
+    window._add_sources([source])
+    run_window_batch(window)
+
+    slaves = window.frame.pack_slaves()
+    assert slaves[0] is window.result_frame, "the results are allocated first"
+    assert window.result_frame.pack_info()["side"] == "bottom"
+    assert "disabled" not in window.details_button.state()
+
+
+def test_the_result_block_leaves_the_screen_again_for_the_next_batch(window, tmp_path):
+    source = tmp_path / "in" / "nota.pdf"
+    write_danfe(source)
+    window.input_kind_buttons[InputKind.PDF].invoke()
+    window._add_sources([source])
+    run_window_batch(window)
+    assert window.result_frame in window.frame.pack_slaves()
+
+    window.reset_for_next_batch()
+    window.root.update()
+
+    assert window.result_frame not in window.frame.pack_slaves()
+
+
+def test_the_pane_says_why_the_write_failed(window, tmp_path):
+    """Every field read fine and the copy still failed: the cause is the answer.
+
+    The recorded reason is the only place it appears - here a file another
+    program was holding, which the catalogue sentence does not mention.
+    """
+    from app.core.models import BatchSummary, FileOutcome
+
+    window.summary = BatchSummary(
+        started_at=datetime(2026, 10, 20, 11, 0, 0),
+        finished_at=datetime(2026, 10, 20, 11, 0, 1),
+        outcomes=[
+            FileOutcome(
+                source_path=tmp_path / "12333.xml",
+                status=Status.ERROR,
+                failure_code=FailureCode.OUTPUT_WRITE_ERROR,
+                parser_id="nfe_xml",
+                source_type="xml",
+                issuer="TEMP CLEAN NORDESTE PRODUTOS DE HIGIENE E SANITIZACAO LTDA",
+                reason="could not copy to C:/out/12333.pdf: [WinError 32] The process "
+                       "cannot access the file because it is being used by another "
+                       "process",
+            )
+        ],
+    )
+    open_details(window, [0])
+
+    shown = window.detail_contents()
+    assert "OUTPUT_WRITE_ERROR" in shown, shown
+    assert "WinError 32" in shown, "the cause has to survive to the pane"
+    assert "being used by another process" in shown
+
+
+def test_the_cause_does_not_repeat_the_catalogue_sentence():
+    """``reason`` is either the catalogue, the catalogue plus detail, or detail."""
+    from app.core.models import FileOutcome
+
+    def cause(reason):
+        return app_window.outcome_cause(
+            FileOutcome(source_path=Path("x.pdf"), status=Status.ERROR,
+                        failure_code=FailureCode.NF_NUMBER_CONFLICT, reason=reason)
+        )
+
+    catalogue = "Printed NF number disagrees with the access key"
+    assert cause(f"{catalogue} (printed 1234, access key 1235)") == "(printed 1234, access key 1235)"
+    assert cause(catalogue) == "", "nothing to add"
+    assert cause("could not copy to C:/out/x.pdf: disk full") == "could not copy to C:/out/x.pdf: disk full"
+    assert cause(None) == ""
+
+
 def test_revealing_names_the_file_for_the_file_manager(monkeypatch, tmp_path):
     """Explorer takes the switch and the path as one argument.
 
@@ -759,7 +936,7 @@ def test_dropping_a_folder_adds_its_pdfs(window, tmp_path):
     window._on_drop(app_window._DropEvent(tcl_list([folder], window.root.tk)))
 
     assert sorted(path.name for path in window.selected) == ["nota 1.pdf", "nota 2.pdf"]
-    assert window.selection_label.cget("text") == "2 file(s) selected"
+    assert window.selection_label.cget("text") == "2 files selected"
 
 
 def test_window_says_when_dropping_is_not_available(shared_root, tmp_path, monkeypatch):
