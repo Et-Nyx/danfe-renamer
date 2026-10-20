@@ -1,10 +1,10 @@
 # DANFE/NF-e local renamer
 
-A fully offline Windows application for NF-e/NFC-e files. It reads the
-authorized **XML**, generates the **DANFE/DANFCe PDF** and writes the renamed
-copy into a fresh folder for the batch. Existing PDFs can also be renamed on
-their own, and when a PDF and its XML are in the same batch the PDF is the copy
-that is kept. The originals are never modified, moved, renamed or deleted.
+A fully offline Windows application for NF-e/NFC-e files. It reads the **XML**,
+generates the **DANFE/DANFCe PDF** and writes the renamed copy into a fresh folder
+for the batch. Existing PDFs can also be renamed on their own, and when a PDF and
+its XML are in the same batch the PDF is the copy that is kept. The originals are
+never modified, moved, renamed or deleted.
 
 Target file name:
 
@@ -28,9 +28,9 @@ them.
 
 ## Fields and where they come from
 
-The XML is the document SEFAZ authorized, so it is the authoritative source of
-the fields whenever the batch has one. A PDF (existing or generated) is only
-read when there is no XML for that note.
+The XML carries the fields the issuer's system wrote, so it is the authoritative
+source of the fields whenever the batch has one. A PDF (existing or generated) is
+only read when there is no XML for that note.
 
 | Field | XML source | PDF source |
 |---|---|---|
@@ -43,6 +43,16 @@ read when there is no XML for that note.
 Both names are always read; only the chosen one goes into the file name. The
 access key, the document model (NF-e 55 or NFC-e 65) and the emission year and
 month must agree everywhere they are printed.
+
+What the authorization protocol says is recorded, never used to refuse the file.
+A note SEFAZ has not authorized - cancelled, denied, or with no protocol at all -
+is read and named like any other, because the fields are on the XML whatever the
+status is and an XML has no PDF anywhere until the run makes one. The status
+travels as a note on the row - the window's details list, the reports and
+`--verbose` all say it - with the protocol's own words kept inside as evidence
+(`Situação da autorização 101: Cancelamento de NF-e homologado`). What still
+fails is what makes the *name* wrong: an unreadable XML, a document that is not
+an NF-e/NFC-e, a key that disagrees with the data. Nothing is guessed.
 
 When a PDF and its XML are in the same batch, the PDF is the copy that is kept
 and the XML provides the name fields; if the PDF cannot be read, the XML
@@ -136,7 +146,7 @@ report accounts for.
 ```bash
 py -3.12 -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements-dev.txt
-.venv/Scripts/python.exe -m pytest      # 289 tests, no confidential data needed
+.venv/Scripts/python.exe -m pytest      # 297 tests, no confidential data needed
 ```
 
 If every Python command on the machine dies with an import error from an old
@@ -225,6 +235,10 @@ Rules that keep it trustworthy:
   values a sentence needs (`app/core/wording.py`), and the window, the reports and
   the console build that sentence in the language of whoever is reading. What a
   library or Windows said travels inside it unchanged: evidence is not translated.
+- A note is never dropped over what SEFAZ answered about it. The authorization
+  status is recorded on the row (`NOT_AUTHORIZED`, `NO_PROTOCOL`), so a cancelled
+  note is named like any other and still says it is cancelled. Only what would
+  make the file *name* wrong refuses the file.
 - Adding a layout means adding a parser in `app/extractors/` and listing it in
   `registry.py`; nothing else changes.
 

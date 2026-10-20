@@ -242,11 +242,17 @@ def _html_reason(outcome: FileOutcome, language: str) -> str:
     """What the report's reason column says for one file.
 
     The sentence a person reads first, then the fact behind it - both built in
-    the report's language, the same way the window's detail pane builds them.
+    the report's language, the same way the window's list builds them. A file
+    that was renamed can still carry notes, and this is where a reader of the
+    report sees them without opening the window.
     """
-    detail = _spoken(outcome.detail, language)
     if outcome.failure_code is None:
-        return detail
+        spoken = [_spoken(outcome.detail, language)]
+        spoken.extend(
+            _spoken(warning, language) for warning in outcome.warnings
+        )
+        return "; ".join(part for part in spoken if part)
+    detail = _spoken(outcome.detail, language)
     sentence = failure_message(outcome.failure_code, language)
     return f"{sentence} - {detail}" if detail else sentence
 

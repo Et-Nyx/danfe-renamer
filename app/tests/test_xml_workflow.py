@@ -18,6 +18,7 @@ import pytest
 
 from app.core.models import FailureCode, NameSource, SourceKind, Status
 from app.core.pipeline import analyze_xml, run_batch
+from app.core.wording import Detail, DetailCode
 from app.xml.invoice import NFCE_MODEL, NFE_MODEL, inspect_xml
 from app.xml.render import XmlRenderError, render_xml_to_pdf
 
@@ -63,7 +64,6 @@ def test_a_well_formed_nfe_reads_every_field(tmp_path):
     assert invoice.total_value == "1.234,56"
     assert invoice.issuer == "INDUSTRIA EXEMPLO LTDA"
     assert invoice.recipient == "COMERCIO EXEMPLO LTDA"
-    assert invoice.authorized is True
     assert invoice.warnings == ()
 
 
@@ -204,14 +204,48 @@ def test_the_nf_number_comes_from_the_key_when_the_invoice_omits_it(tmp_path):
 
 
 @pytest.mark.parametrize("status", ["101", "110", "301", "999"])
-def test_a_note_the_sefaz_did_not_authorize_is_refused(tmp_path, status):
+def test_a_note_the_sefaz_did_not_authorize_is_read_and_flagged(tmp_path, status):
+    """What SEFAZ answered is a fact about the note, not a reason to lose it.
+
+    Every field the name needs is printed on the XML whatever the status is, so
+    the file is read and can be named; the protocol's own words travel on the
+    row, because a cancelled note that looks exactly like a valid one is a trap
+    for whoever files it.
+    """
     source = tmp_path / "cancelada.xml"
     write_nfe_xml(source, nf_number="1234", status=status)
 
-    with pytest.raises(Exception) as refused:
-        inspect_xml(source)
+    invoice = inspect_xml(source)
 
-    assert refused.value.code is FailureCode.XML_NOT_AUTHORIZED
+    assert invoice.nf_number == "1234"
+    assert invoice.total_value == "1.234,56"
+    flagged = [
+        warning
+        for warning in invoice.warnings
+        if warning.code is DetailCode.NOT_AUTHORIZED
+    ]
+    assert flagged, invoice.warnings
+    assert f"status {status}: " in flagged[0].sentence()
+    assert "Autorizado o uso da NF-e" in flagged[0].sentence(), (
+        "the protocol's own words, as evidence"
+    )
+
+
+def test_a_status_without_a_reason_is_flagged_without_one(tmp_path):
+    source = _write(
+        tmp_path / "cancelada-sem-motivo.xml",
+        _xml(status="101").replace("<xMotivo>Autorizado o uso da NF-e</xMotivo>", ""),
+    )
+
+    invoice = inspect_xml(source)
+
+    flagged = [
+        warning
+        for warning in invoice.warnings
+        if warning.code is DetailCode.NOT_AUTHORIZED_SILENT
+    ]
+    assert flagged, invoice.warnings
+    assert "101" in flagged[0].sentence()
 
 
 def test_a_protocol_key_that_disagrees_with_the_invoice_key_is_refused(tmp_path):
@@ -247,7 +281,6 @@ def test_a_note_without_a_protocol_is_read_but_flagged(tmp_path):
 
     invoice = inspect_xml(source)
 
-    assert invoice.authorized is False
     assert any("protocol" in warning.sentence() for warning in invoice.warnings), (
         invoice.warnings
     )
@@ -260,7 +293,6 @@ def test_a_protocol_without_a_status_is_read_but_flagged(tmp_path):
 
     invoice = inspect_xml(source)
 
-    assert invoice.authorized is False
     assert any("cStat" in warning.sentence() for warning in invoice.warnings), (
         invoice.warnings
     )
@@ -272,7 +304,6 @@ def test_a_homologation_note_is_read_and_flagged(tmp_path):
 
     invoice = inspect_xml(source)
 
-    assert invoice.authorized is True
     assert any("omologa" in warning.sentence() for warning in invoice.warnings), (
         invoice.warnings
     )
@@ -557,8 +588,6 @@ def test_a_copy_that_leaves_a_file_behind_says_so_in_the_warnings(
     """A folder holding a partial copy is the one thing it must not do silently."""
     from app.core import pipeline
     from app.core.filesystem import OutputWriteError
-    from app.core.wording import Detail, DetailCode
-
     def fail_and_leave_a_file(source, destination, **kwargs):
         raise OutputWriteError(
             Detail(
@@ -583,11 +612,13 @@ def test_a_copy_that_leaves_a_file_behind_says_so_in_the_warnings(
     assert str(tmp_path / "out") in outcome.warnings[0].sentence()
 
 
-def test_a_note_the_sefaz_did_not_authorize_is_left_without_a_pdf(tmp_path):
-    """There is no DANFE to keep for a note that was never authorized.
+def test_a_note_the_sefaz_did_not_authorize_is_renamed_and_flagged(tmp_path):
+    """The document is worth more than the status, and the status is not hidden.
 
-    The reminder of the boundary: an XML this application cannot vouch for does
-    not get a document made from it, however readable the XML is.
+    A cancelled note is still a document somebody asked this run to name, and an
+    XML has no PDF anywhere until the run makes one - so it is read, converted
+    and renamed like any other. The row says what the protocol answered, because
+    a file that looks exactly like a valid one is a trap for whoever files it.
     """
     source = tmp_path / "in" / "cancelada.xml"
     write_nfe_xml(source, nf_number="1234", status="101")
@@ -595,9 +626,11 @@ def test_a_note_the_sefaz_did_not_authorize_is_left_without_a_pdf(tmp_path):
     summary = run_batch([source], tmp_path / "out")
 
     outcome = summary.outcomes[0]
-    assert outcome.failure_code is FailureCode.XML_NOT_AUTHORIZED
-    assert outcome.destination_path is None
+    assert outcome.succeeded, outcome.failure_code
+    assert (summary.output_directory / EXPECTED_NAME).exists()
     assert not (summary.output_directory / "_unrenamed").exists()
+    assert [warning.code for warning in outcome.warnings] == [DetailCode.NOT_AUTHORIZED]
+    assert "101" in outcome.warnings[0].sentence()
 
 
 @pytest.mark.parametrize("name", ["nota.XML", "NOTA.XML"])
@@ -687,3 +720,20 @@ def test_the_report_describes_an_xml_row(tmp_path):
         key[index : index + 4] for index in range(0, 44, 4)
     )
     assert row["output_file"] == row["target_filename"] == EXPECTED_NAME
+
+
+def test_the_report_says_why_a_renamed_note_is_not_ordinary(tmp_path):
+    """The window is not the only surface: a report is read on its own.
+
+    A note SEFAZ never authorized keeps its agreed name, so the notes recorded
+    about it are the only thing that tells its row apart - in the report too,
+    and in the one language the report is written in.
+    """
+    source = tmp_path / "in" / "cancelada.xml"
+    write_nfe_xml(source, nf_number="1234", status="101")
+
+    summary = run_batch([source], tmp_path / "out", language="pt")
+
+    document = summary.report_paths["html"].read_text(encoding="utf-8")
+    assert "Situação da autorização 101" in document
+    assert "Authorization status 101" not in document

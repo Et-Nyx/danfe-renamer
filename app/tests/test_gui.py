@@ -48,6 +48,18 @@ def test_placeholders_match_between_languages():
             assert set(pattern.findall(table[key])) == expected, f"{code}.{key}"
 
 
+def test_the_labels_that_invite_input_say_files_not_pdfs():
+    """The window reads XML by default, so what invites input says files.
+
+    Both the button that opens the chooser - its text and the dialog title it
+    passes on - and the alert shown when nothing is selected used to say PDFs,
+    which is only one of the two kinds a batch accepts.
+    """
+    for code, table in STRINGS.items():
+        for key in ("choose_files", "no_files_alert"):
+            assert "PDF" not in table[key].upper(), f"{code}.{key} promises PDFs"
+
+
 def test_translator_switches_and_notifies():
     translator = Translator("en")
     seen = []
@@ -1044,6 +1056,30 @@ def test_the_list_says_how_much_of_the_batch_it_is_showing(window, tmp_path):
     assert window.filter_count_label.cget("text") == "1 of 2 files"
 
 
+def test_the_list_carries_the_note_that_a_renamed_file_is_not_authorized(
+    window, tmp_path
+):
+    """A cancelled note keeps its name, so the list is where it has to say so.
+
+    Reading it in the pane would mean opening every row, and a file that looks
+    exactly like a valid one is the whole risk of naming it at all.
+    """
+    source = tmp_path / "in" / "cancelada.xml"
+    write_nfe_xml(source, nf_number="1234", status="101")
+    window._add_sources([source])
+    run_window_batch(window)
+
+    open_details(window, [])
+
+    table = window.details_table
+    row = table.get_children()[0]
+    assert table.item(row, "text") == "cancelada.xml"
+    status, target, reason = table.item(row, "values")
+    assert status == window.translate("status_generated")
+    assert target == "16.09.2026_NF 1234 - INDUSTRIA EXEMPLO LTDA - 1.234,56.pdf"
+    assert reason.startswith("Authorization status 101:"), reason
+
+
 def test_the_filter_and_its_count_speak_the_chosen_language(window, tmp_path):
     mixed_batch(window, tmp_path)
     open_details(window, [])
@@ -1117,6 +1153,45 @@ def test_a_skipped_file_is_a_failure_of_the_batch():
         keeps(outcome, app_window.DetailsFilter.SUCCESSFUL)
         for outcome in (renamed, skipped, errored)
     ] == [True, False, False]
+
+
+def test_the_reason_column_says_what_was_noted_about_a_renamed_file():
+    """A renamed row can still have something to say, and the column says it.
+
+    A note SEFAZ never authorized keeps its agreed name - the document is worth
+    more than the status - so its notes are the only thing that tells its row
+    apart, and the column is where a person reads them without opening the pane.
+    """
+    from app.core.wording import message as failure_message
+
+    noted = FileOutcome(
+        source_path=Path("cancelada.xml"),
+        status=Status.SUCCESS,
+        warnings=(
+            Detail(
+                DetailCode.NOT_AUTHORIZED,
+                {"status": "101", "reason": "Cancelamento"},
+            ),
+        ),
+    )
+    plain = FileOutcome(source_path=Path("nota.xml"), status=Status.SUCCESS)
+    failed = FileOutcome(
+        source_path=Path("x.pdf"),
+        status=Status.SKIPPED,
+        failure_code=FailureCode.RECIPIENT_NOT_FOUND,
+        warnings=(Detail(DetailCode.NOT_AUTHORIZED, {"status": "101"}),),
+    )
+
+    assert app_window.row_reason(noted, "pt") == (
+        "Situação da autorização 101: Cancelamento"
+    )
+    assert app_window.row_reason(noted, "en") == (
+        "Authorization status 101: Cancelamento"
+    )
+    assert app_window.row_reason(plain, "pt") == "", "nothing to say, nothing said"
+    assert app_window.row_reason(failed, "pt") == failure_message(
+        FailureCode.RECIPIENT_NOT_FOUND, "pt"
+    ), "what went wrong comes first, and it is not the notes"
 
 
 def test_revealing_names_the_file_for_the_file_manager(monkeypatch, tmp_path):

@@ -217,10 +217,6 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "XML is not an NF-e or NFC-e document",
         "pt": "O XML não é um documento NF-e ou NFC-e",
     },
-    "XML_NOT_AUTHORIZED": {
-        "en": "XML does not carry an authorized NF-e/NFC-e",
-        "pt": "O XML não contém uma NF-e/NFC-e autorizada",
-    },
     "UNEXPECTED_EXTRACTION_ERROR": {
         "en": "Unexpected error while reading the document",
         "pt": "Erro inesperado ao ler o documento",

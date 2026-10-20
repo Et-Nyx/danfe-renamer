@@ -170,15 +170,20 @@ def reveal_path(path: Path) -> None:
         subprocess.Popen(["xdg-open", str(folder)])
 
 
-def failure_sentence(outcome: FileOutcome, language: str) -> str:
-    """What went wrong, short enough for a column and in the reader's language.
+def row_reason(outcome: FileOutcome, language: str) -> str:
+    """What the Motivo column says about one file, in the reader's language.
 
     The sentence belongs to the failure code, not to the recorded detail: the
-    detail is the specific fact behind it, and it has a line of its own.
+    detail is the specific fact behind it, and it has a line of its own. A file
+    that was renamed can still carry notes - a note SEFAZ never authorized, a
+    total the PDF and the XML disagreed on - and those are what makes its row
+    worth reading, so they are said here too.
     """
-    if outcome.failure_code is None:
-        return outcome_cause(outcome, language)
-    return failure_message(outcome.failure_code, language)
+    if outcome.failure_code is not None:
+        return failure_message(outcome.failure_code, language)
+    spoken = [outcome_cause(outcome, language)]
+    spoken.extend(warning.sentence(language) for warning in outcome.warnings)
+    return "; ".join(part for part in spoken if part)
 
 
 def outcome_cause(outcome: FileOutcome, language: str) -> str:
@@ -819,7 +824,7 @@ class RenamerWindow:
                 values=(
                     status,
                     outcome.target_filename or "-",
-                    failure_sentence(outcome, t.language),
+                    row_reason(outcome, t.language),
                 ),
             )
             shown += 1

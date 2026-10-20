@@ -1,13 +1,17 @@
-"""Read the fields of an NF-e or NFC-e from its authorized XML.
+"""Read the fields of an NF-e or NFC-e from its XML.
 
 Only the fields the file name needs are read here. The XML is the authoritative
-source (it is what SEFAZ authorized), so the parser is deliberately strict about
-the access key, the document model and the authorization protocol.
+source, so the parser is deliberately strict about the access key and the
+document model.
 
-Supported roots are ``nfeProc`` (an authorized NF-e/NFC-e with its protocol) and
-plain ``NFe``. A plain ``NFe`` is accepted with a warning: the data is valid,
-but there is no protocol proving that SEFAZ authorized it. A ``resNFe`` summary,
-an event XML, a CT-e or any other document is rejected instead of guessed at.
+Supported roots are ``nfeProc`` (an NF-e/NFC-e with its authorization protocol)
+and plain ``NFe``. What the protocol says about the authorization is *recorded*,
+not used to refuse the file: a note that SEFAZ has not authorized is still a
+document somebody asked this run to name, and an XML has no PDF anywhere until
+the run makes one - refusing it costs the document. The status travels as a
+warning (``NOT_AUTHORIZED``, ``NO_PROTOCOL``), so the name is built and the
+reader is told. A ``resNFe`` summary, an event XML, a CT-e or any other document
+is rejected instead of guessed at.
 """
 
 from __future__ import annotations
@@ -54,7 +58,6 @@ class XmlInvoice:
     total_value: str | None
     issuer: str | None
     recipient: str | None
-    authorized: bool
     warnings: tuple[str, ...] = ()
 
     @property
@@ -112,7 +115,7 @@ def inspect_xml(path: str | Path) -> XmlInvoice:
     recipient = _path_text(inf_nfe, "dest", "xNome")
 
     _check_issuer_cnpj(inf_nfe, access_key)
-    authorized = _read_authorization(root, access_key, warnings)
+    _record_authorization(root, access_key, warnings)
     if _path_text(inf_nfe, "ide", "tpAmb") == "2":
         warnings.append(Detail(DetailCode.HOMOLOGATION))
 
@@ -126,7 +129,6 @@ def inspect_xml(path: str | Path) -> XmlInvoice:
         total_value=total_value,
         issuer=issuer,
         recipient=recipient,
-        authorized=authorized,
         warnings=tuple(warnings),
     )
 
@@ -209,27 +211,34 @@ def _check_issuer_cnpj(inf_nfe, access_key: AccessKey) -> None:
         )
 
 
-def _read_authorization(root, access_key: AccessKey, warnings: list[Detail]) -> bool:
+def _record_authorization(root, access_key: AccessKey, warnings: list[Detail]) -> None:
+    """Record what the protocol says about the note's authorization.
+
+    A note whose status is not ``100`` is noted, never refused: the fields are
+    read either way, so the file can be named and its DANFE made. What the
+    protocol says is kept in the reader's language by the warning's own frame,
+    and the xMotivo travels inside it as evidence.
+    """
     protocol = _find_first(root, "infProt")
     if protocol is None:
         warnings.append(Detail(DetailCode.NO_PROTOCOL))
-        return False
+        return
 
     status = _path_text(protocol, "cStat")
     if status is None:
         warnings.append(Detail(DetailCode.PROTOCOL_WITHOUT_CSTAT))
-        return False
+        return
     if status != AUTHORIZED_STATUS:
         reason = _path_text(protocol, "xMotivo")
-        raise XmlInvoiceError(
-            FailureCode.XML_NOT_AUTHORIZED,
+        warnings.append(
             Detail(
                 DetailCode.NOT_AUTHORIZED if reason else DetailCode.NOT_AUTHORIZED_SILENT,
                 {"status": status, "reason": reason}
                 if reason
                 else {"status": status},
-            ),
+            )
         )
+        return
 
     protocol_key = _path_text(protocol, "chNFe")
     if protocol_key and protocol_key != access_key.digits:
@@ -237,7 +246,6 @@ def _read_authorization(root, access_key: AccessKey, warnings: list[Detail]) -> 
             FailureCode.INVALID_ACCESS_KEY,
             Detail(DetailCode.PROTOCOL_KEY_DISAGREES),
         )
-    return True
 
 
 def _unsupported_root(root) -> XmlInvoiceError:
