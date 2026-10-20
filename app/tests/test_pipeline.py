@@ -11,15 +11,21 @@ from app import __version__
 from app.core.detector import detect
 from app.core.models import FailureCode, InputKind, NameSource, Status
 from app.core.pipeline import analyze_file, run_batch
+from app.core.wording import message
 from app.pdf.text import load_document
 
-from .fixtures.danfe_builder import write_danfe
+from .fixtures.danfe_builder import write_danfe, write_nfe_xml
 
 EXPECTED_NAME = "16.09.2026_NF 1234 - INDUSTRIA EXEMPLO LTDA - 1.234,56.pdf"
 
 
 def _make_danfe(path, **kwargs):
     write_danfe(path, **kwargs)
+    return path
+
+
+def _make_xml(path, **kwargs):
+    write_nfe_xml(path, **kwargs)
     return path
 
 
@@ -67,12 +73,17 @@ def test_the_reports_are_written_in_the_language_they_are_asked_for(tmp_path):
 
     assert portuguese["failure_message"] == "Não foi possível ler o PDF"
     assert english["failure_message"] == "PDF could not be read"
-    # The two columns a machine keys on say the same thing either way, and the
-    # recorded detail is left exactly as the layer wrote it.
+    # The columns a machine keys on say the same thing either way; the words the
+    # library produced travel inside the sentence instead of beside it.
     assert portuguese["failure_code"] == english["failure_code"] == "PDF_READ_ERROR"
     assert portuguese["status"] == english["status"] == Status.SKIPPED.value
-    assert portuguese["reason"] == english["reason"]
-    assert portuguese["reason"], "the library's own words are kept for support"
+    assert portuguese["detail_code"] == english["detail_code"] == "PDF_OPEN_FAILED"
+    assert "Não foi possível abrir o PDF" in portuguese["reason"]
+    assert "Could not open the PDF" in english["reason"]
+    library_words = english["reason"].split(": ", 1)[1]
+    assert library_words in portuguese["reason"], (
+        "what the library said is kept, in whatever language it arrived"
+    )
 
 
 def test_an_english_report_is_still_the_default(tmp_path):
@@ -114,6 +125,7 @@ def test_batch_report_lists_the_agreed_columns(tmp_path):
         "status",
         "failure_code",
         "failure_message",
+        "detail_code",
         "parser",
         "access_key",
         "nf_number",
@@ -123,6 +135,7 @@ def test_batch_report_lists_the_agreed_columns(tmp_path):
         "recipient",
         "name_source",
         "target_filename",
+        "output_file",
         "reason",
         "warnings",
         "source_type",
@@ -153,6 +166,238 @@ def test_dry_run_writes_nothing(tmp_path):
     assert summary.output_directory is None
     assert not output_root.exists()
     assert list(tmp_path.rglob("*.pdf")) == [source]
+
+
+def test_the_emission_date_reads_the_same_from_a_pdf_and_from_an_xml(tmp_path):
+    """One note, one string: the column must not depend on which file it came from."""
+    from_pdf = _make_danfe(tmp_path / "pdf" / "nota.pdf", emission_date="16/09/2026")
+    from_xml = _make_xml(tmp_path / "xml" / "nota.xml", nf_number="1234")
+
+    pdf_outcome = run_batch([from_pdf], tmp_path / "out-pdf").outcomes[0]
+    xml_outcome = run_batch([from_xml], tmp_path / "out-xml").outcomes[0]
+
+    assert pdf_outcome.emission_date == "16.09.2026"
+    assert xml_outcome.emission_date == "16.09.2026"
+
+
+def test_an_impossible_printed_date_is_named_in_the_detail(tmp_path):
+    """With no date to report, the detail says which date the page printed."""
+    source = _make_danfe(tmp_path / "nota.pdf", emission_date="31/02/2026")
+
+    outcome = run_batch([source], tmp_path / "out").outcomes[0]
+
+    assert outcome.failure_code is FailureCode.EMISSION_DATE_NOT_FOUND
+    assert outcome.emission_date is None
+    assert outcome.detail is not None
+    assert "31/02/2026" in outcome.detail.sentence()
+
+
+# --------------------------------------------- a file that fails keeps its PDF
+#
+# An XML has no PDF anywhere until a run makes one, so a file that could not be
+# named used to leave nothing at all: the DANFE was rendered into a staging
+# folder and deleted with it, or never rendered in the first place. Whoever has
+# to finish that file by hand - rename it, print it, send it - needs the document
+# itself, so it is kept in the batch's `_unrenamed` folder, under the name of the
+# XML it came from.
+
+
+def test_an_xml_that_cannot_be_named_keeps_its_pdf(tmp_path):
+    source = _make_xml(tmp_path / "in" / "sem-destinatario.xml", recipient="")
+
+    summary = run_batch([source], tmp_path / "out", name_source=NameSource.RECIPIENT)
+
+    outcome = summary.outcomes[0]
+    assert outcome.status is Status.SKIPPED
+    assert outcome.failure_code is FailureCode.RECIPIENT_NOT_FOUND
+    kept = summary.output_directory / "_unrenamed" / "sem-destinatario.pdf"
+    assert outcome.destination_path == kept, "the row points at the PDF it kept"
+    assert outcome.unnamed is True
+    assert outcome.generated is True, "this run did make the PDF it is keeping"
+    with pymupdf.open(kept) as document:
+        assert document.page_count >= 1
+        assert "INDUSTRIA EXEMPLO LTDA" in document[0].get_text(), (
+            "the kept file is the document itself, not an empty stand-in"
+        )
+
+
+def test_the_kept_pdf_is_not_passed_off_as_a_renamed_copy(tmp_path):
+    """The batch folder still holds only the files that were named."""
+    source = _make_xml(tmp_path / "in" / "sem-destinatario.xml", recipient="")
+
+    summary = run_batch([source], tmp_path / "out", name_source=NameSource.RECIPIENT)
+
+    assert summary.succeeded == 0
+    assert not list(summary.output_directory.glob("*.pdf")), (
+        "a file nobody could name does not belong among the renamed ones"
+    )
+
+
+def test_a_copy_that_fails_keeps_the_pdf_it_was_going_to_write(tmp_path, monkeypatch):
+    """The DANFE was made and verified; only putting it in place failed."""
+    from app.core import pipeline
+    from app.core.filesystem import OutputWriteError
+    from app.core.wording import Detail, DetailCode
+
+    real_copy = pipeline.copy_into_batch
+
+    def refuse_the_named_copy(source, destination, **kwargs):
+        if "_unrenamed" not in str(destination):
+            raise OutputWriteError(
+                Detail(
+                    DetailCode.COPY_FAILED,
+                    {
+                        "destination": str(destination),
+                        "error": "simulated: something is holding the fresh file",
+                    },
+                )
+            )
+        return real_copy(source, destination, **kwargs)
+
+    monkeypatch.setattr(pipeline, "copy_into_batch", refuse_the_named_copy)
+    source = _make_xml(tmp_path / "in" / "nota.xml")
+
+    summary = run_batch([source], tmp_path / "out")
+
+    outcome = summary.outcomes[0]
+    assert outcome.status is Status.ERROR
+    assert outcome.failure_code is FailureCode.OUTPUT_WRITE_ERROR
+    kept = summary.output_directory / "_unrenamed" / "nota.pdf"
+    assert outcome.destination_path == kept
+    assert kept.exists(), "the generated PDF must not follow the staging folder out"
+    assert outcome.generated is True
+
+
+def test_what_went_wrong_is_still_what_the_row_says(tmp_path):
+    """Keeping the PDF must not turn the row into a story about the rescue."""
+    source = _make_xml(tmp_path / "in" / "sem-destinatario.xml", recipient="")
+
+    summary = run_batch([source], tmp_path / "out", name_source=NameSource.RECIPIENT)
+
+    outcome = summary.outcomes[0]
+    assert outcome.failure_code is FailureCode.RECIPIENT_NOT_FOUND
+    assert "recipient" in message(outcome.failure_code).lower()
+    assert outcome.detail is None, "the rescue adds no story of its own"
+
+
+def test_an_xml_that_cannot_be_read_keeps_nothing(tmp_path):
+    source = tmp_path / "in" / "quebrado.xml"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"this is not XML at all")
+
+    summary = run_batch([source], tmp_path / "out")
+
+    outcome = summary.outcomes[0]
+    assert outcome.failure_code is FailureCode.XML_READ_ERROR
+    assert outcome.destination_path is None
+    assert not (summary.output_directory / "_unrenamed").exists(), (
+        "there was no DANFE to keep"
+    )
+
+
+def test_two_files_with_the_same_name_are_both_kept(tmp_path):
+    """Neither may be lost to a name that nobody agreed on."""
+    first = _make_xml(tmp_path / "2025" / "nota.xml", nf_number="1234", recipient="")
+    second = _make_xml(tmp_path / "2026" / "nota.xml", nf_number="1235", recipient="")
+
+    summary = run_batch(
+        [first, second], tmp_path / "out", name_source=NameSource.RECIPIENT
+    )
+
+    folder = summary.output_directory / "_unrenamed"
+    assert sorted(path.name for path in folder.iterdir()) == [
+        "nota (2).pdf",
+        "nota.pdf",
+    ]
+    assert [outcome.destination_path for outcome in summary.outcomes] == [
+        folder / "nota.pdf",
+        folder / "nota (2).pdf",
+    ]
+
+
+def test_a_note_already_in_the_batch_keeps_no_second_copy(tmp_path):
+    """Its reason already says where it is; a duplicate is not a lost document."""
+    first = _make_xml(tmp_path / "in" / "primeira.xml", nf_number="1234")
+    second = _make_xml(tmp_path / "in" / "segunda.xml", nf_number="1234")
+
+    summary = run_batch([first, second], tmp_path / "out")
+
+    assert [o.failure_code for o in summary.outcomes] == [
+        None,
+        FailureCode.DUPLICATE_NOTE,
+    ]
+    assert summary.outcomes[1].destination_path is None
+    assert not (summary.output_directory / "_unrenamed").exists()
+    assert len(list(summary.output_directory.glob("*.pdf"))) == 1
+
+
+def test_a_pdf_that_fails_keeps_nothing_because_the_reader_has_it(tmp_path):
+    """A PDF input is the user's own file; the batch has nothing to hand over."""
+    broken = _unreadable(tmp_path / "in" / "quebrado.pdf")
+
+    summary = run_batch([broken], tmp_path / "out")
+
+    assert summary.outcomes[0].destination_path is None
+    assert not (summary.output_directory / "_unrenamed").exists()
+
+
+def test_a_dry_run_keeps_nothing(tmp_path):
+    source = _make_xml(tmp_path / "in" / "sem-destinatario.xml", recipient="")
+    output_root = tmp_path / "out"
+
+    summary = run_batch(
+        [source], output_root, copy_files=False, name_source=NameSource.RECIPIENT
+    )
+
+    assert summary.outcomes[0].destination_path is None
+    assert not output_root.exists()
+
+
+def test_the_report_names_the_file_it_kept(tmp_path):
+    """One column locates every file the run produced, whether it has a name or not."""
+    good = _make_xml(tmp_path / "in" / "nota.xml", nf_number="1235")
+    refused = _make_xml(tmp_path / "in" / "sem-destinatario.xml", recipient="")
+
+    summary = run_batch(
+        [good, refused], tmp_path / "out", name_source=NameSource.RECIPIENT
+    )
+
+    rows = {row["source_filename"]: row for row in _csv_rows(summary)}
+    kept = summary.output_directory / "_unrenamed" / "sem-destinatario.pdf"
+    assert rows["sem-destinatario.xml"]["output_file"] == str(
+        kept.relative_to(summary.output_directory)
+    ), "the folder would otherwise hold a file no line explains"
+    assert rows["nota.xml"]["output_file"] == rows["nota.xml"]["target_filename"]
+
+
+def test_a_copying_run_needs_somewhere_to_copy_to(tmp_path, monkeypatch):
+    """``None`` is not "the current directory": no caller means to write there."""
+    source = _make_danfe(tmp_path / "nota.pdf")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError) as refused:
+        run_batch([source], None)
+
+    assert "output_root" in str(refused.value)
+    assert not (tmp_path / "DANFE_Renamed").exists(), "nothing was written"
+
+
+def test_a_report_does_not_repeat_the_reason_in_two_languages(tmp_path):
+    """One sentence, chosen by the report's language, plus what the layer added."""
+    source = _make_xml(tmp_path / "in" / "sem-destinatario.xml", recipient="")
+
+    summary = run_batch(
+        [source], tmp_path / "out", name_source=NameSource.RECIPIENT, language="pt"
+    )
+
+    html = summary.report_paths["html"].read_text(encoding="utf-8")
+    assert "Não foi possível identificar o destinatário com segurança" in html
+    assert "Recipient name could not be identified confidently" not in html, (
+        "the catalogue sentence in the other language is not a reason"
+    )
+    assert _csv_rows(summary)[0]["reason"] == "", (
+        "the failure code already says it all: no second sentence, in any language"
+    )
 
 
 def test_a_batch_can_name_the_copies_after_the_recipient(tmp_path):
@@ -232,7 +477,8 @@ def test_the_same_note_twice_is_reported_as_duplicate_work(tmp_path):
     ]
     assert len(duplicate) == 1
     assert duplicate[0].source_path == raw_download
-    assert "nota.pdf" in (duplicate[0].reason or "")
+    assert duplicate[0].detail is not None
+    assert "nota.pdf" in duplicate[0].detail.sentence()
     assert not [
         item for item in summary.outcomes if item.failure_code is FailureCode.OUTPUT_COLLISION
     ]
@@ -267,7 +513,9 @@ def test_mixed_batch_reports_every_file(tmp_path):
     assert summary.errors == 0
     codes = {item.failure_code for item in summary.outcomes if item.failure_code}
     assert codes == {FailureCode.UNSUPPORTED_FORMAT, FailureCode.PDF_READ_ERROR}
-    assert all(item.reason for item in summary.outcomes if not item.succeeded)
+    assert all(
+        message(item.failure_code) for item in summary.outcomes if not item.succeeded
+    ), "every failure is explained"
     assert summary.failures_by_code()[FailureCode.UNSUPPORTED_FORMAT] == 1
 
 

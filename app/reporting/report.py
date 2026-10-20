@@ -19,6 +19,7 @@ from .. import __version__
 from ..core.models import BatchSummary, FileOutcome
 from ..core.wording import (
     DEFAULT_LANGUAGE,
+    Detail,
     counted,
     message as failure_message,
     report as report_text,
@@ -31,6 +32,9 @@ REPORT_FIELDS = (
     "status",
     "failure_code",
     "failure_message",
+    #: The stable code of the one fact behind the failure, for a script that must
+    #: not read a sentence: what it was exactly is in ``reason``.
+    "detail_code",
     "parser",
     "access_key",
     "nf_number",
@@ -40,6 +44,10 @@ REPORT_FIELDS = (
     "recipient",
     "name_source",
     "target_filename",
+    #: Where the run put this file's output, inside the batch folder. The agreed
+    #: name for a file it could name, and the ``_unrenamed`` copy for one it
+    #: could not, so every produced file can be found from one column.
+    "output_file",
     "reason",
     "warnings",
     "source_type",
@@ -79,10 +87,15 @@ def report_rows(
     summary: BatchSummary, language: str = DEFAULT_LANGUAGE
 ) -> list[dict[str, str]]:
     """One dictionary per file, in :data:`REPORT_FIELDS` order."""
-    return [_row(outcome, language) for outcome in summary.outcomes]
+    return [
+        _row(outcome, language, summary.output_directory)
+        for outcome in summary.outcomes
+    ]
 
 
-def _row(outcome: FileOutcome, language: str) -> dict[str, str]:
+def _row(
+    outcome: FileOutcome, language: str, batch_directory: Path | None
+) -> dict[str, str]:
     code = outcome.failure_code
     return {
         "source_filename": outcome.source_path.name,
@@ -98,14 +111,43 @@ def _row(outcome: FileOutcome, language: str) -> dict[str, str]:
         "recipient": outcome.recipient or "",
         "name_source": outcome.name_source or "",
         "target_filename": outcome.target_filename or "",
-        # Kept verbatim: for XML, PDF and write failures this is the library's own
-        # words, which no translation can improve and a support request needs.
-        "reason": outcome.reason or "",
-        "warnings": " | ".join(outcome.warnings),
+        "output_file": _output_file(outcome, batch_directory),
+        # The detail as a sentence in the report's language; ``reason`` keeps its
+        # name because a script may read it, and ``detail_code`` is what such a
+        # script should key on.
+        "reason": _spoken(outcome.detail, language),
+        "detail_code": outcome.detail.code.value if outcome.detail else "",
+        # Everything else the run recorded about the file, in the same language.
+        "warnings": " | ".join(
+            warning.sentence(language) for warning in outcome.warnings
+        ),
         "source_type": outcome.source_type or "",
         "document_model": outcome.document_model or "",
         "generated": "true" if outcome.generated else "false",
     }
+
+
+def _spoken(detail: Detail | None, language: str) -> str:
+    """A recorded detail as a sentence in ``language``, or nothing at all."""
+    return detail.sentence(language) if detail is not None else ""
+
+
+def _output_file(outcome: FileOutcome, batch_directory: Path | None) -> str:
+    """Where the run put this file's output, as a path inside the batch folder.
+
+    Relative, because that is how the rest of the report names it and the batch
+    folder is where whoever reads the report is standing. An output that ended
+    up somewhere else is named in full rather than guessed at.
+    """
+    written = outcome.destination_path
+    if written is None:
+        return ""
+    if batch_directory is None:
+        return str(written)
+    try:
+        return str(Path(written).relative_to(batch_directory))
+    except ValueError:
+        return str(written)
 
 
 def _write_csv(summary: BatchSummary, path: Path, language: str) -> None:
@@ -152,7 +194,7 @@ def _write_html(summary: BatchSummary, path: Path, language: str) -> None:
         rows.append(
             "<tr class=\"{style}\">"
             "<td>{source}</td><td>{status}</td>"
-            "<td>{target}</td><td>{reason}</td></tr>".format(
+            "<td>{target}</td><td>{output}</td><td>{reason}</td></tr>".format(
                 style=outcome.status.value,
                 source=escape(outcome.source_path.name),
                 status=escape(
@@ -161,6 +203,7 @@ def _write_html(summary: BatchSummary, path: Path, language: str) -> None:
                     )
                 ),
                 target=escape(outcome.target_filename or "-"),
+                output=escape(_output_file(outcome, summary.output_directory) or "-"),
                 reason=escape(_html_reason(outcome, language)),
             )
         )
@@ -188,6 +231,7 @@ def _write_html(summary: BatchSummary, path: Path, language: str) -> None:
         column_source=escape(report_text("column_source", language)),
         column_status=escape(report_text("column_status", language)),
         column_target=escape(report_text("column_target", language)),
+        column_output=escape(report_text("column_output", language)),
         column_reason=escape(report_text("column_reason", language)),
         rows="\n".join(rows),
     )
@@ -197,17 +241,14 @@ def _write_html(summary: BatchSummary, path: Path, language: str) -> None:
 def _html_reason(outcome: FileOutcome, language: str) -> str:
     """What the report's reason column says for one file.
 
-    The sentence a person reads first; the layer's own recorded detail follows it
-    when there is one and it adds something, because that is what a support
-    request asks for.
+    The sentence a person reads first, then the fact behind it - both built in
+    the report's language, the same way the window's detail pane builds them.
     """
+    detail = _spoken(outcome.detail, language)
     if outcome.failure_code is None:
-        return outcome.reason or ""
+        return detail
     sentence = failure_message(outcome.failure_code, language)
-    recorded = (outcome.reason or "").strip()
-    if recorded and recorded not in sentence:
-        return f"{sentence} - {recorded}"
-    return sentence
+    return f"{sentence} - {detail}" if detail else sentence
 
 
 _HTML_TEMPLATE = """<!DOCTYPE html>
@@ -241,7 +282,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <h2>{failures_heading}</h2>
 <ul>{failure_rows}</ul>
 <table>
- <thead><tr><th>{column_source}</th><th>{column_status}</th><th>{column_target}</th><th>{column_reason}</th></tr></thead>
+ <thead><tr><th>{column_source}</th><th>{column_status}</th><th>{column_target}</th><th>{column_output}</th><th>{column_reason}</th></tr></thead>
  <tbody>
 {rows}
  </tbody>

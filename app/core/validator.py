@@ -13,6 +13,7 @@ the kind of quiet mistake the plan forbids.
 from __future__ import annotations
 
 from ..pdf.access_key import AccessKey, InvalidAccessKey
+from .filename import sanitize_component
 from .models import (
     CheckStatus,
     ExtractionResult,
@@ -23,6 +24,7 @@ from .models import (
     ValidationOutcome,
     failure,
 )
+from .wording import Detail, DetailCode
 
 
 def validate(
@@ -44,18 +46,21 @@ def validate(
     if not access_key.nf_number or not access_key.nf_number.isdigit():
         return failure(
             FailureCode.NF_NUMBER_INVALID,
-            f"access key carries number {access_key.number!r}",
+            Detail(DetailCode.KEY_NUMBER_UNUSABLE, {"number": access_key.number}),
         )
     if fields.printed_nf_number and fields.printed_nf_number != access_key.nf_number:
         return failure(
             FailureCode.NF_NUMBER_CONFLICT,
-            f"printed {fields.printed_nf_number}, access key {access_key.nf_number}",
+            Detail(
+                DetailCode.KEY_NUMBER_CONFLICT,
+                {"printed": fields.printed_nf_number, "key": access_key.nf_number},
+            ),
         )
 
     emission_date = fields.emission_date
     if emission_date is None:
         detail = (
-            f"printed as {fields.emission_date_text!r}"
+            Detail(DetailCode.DATE_PRINTED_AS, {"printed": fields.emission_date_text})
             if fields.emission_date_text
             else None
         )
@@ -66,8 +71,13 @@ def validate(
     ):
         return failure(
             FailureCode.EMISSION_DATE_CONFLICT,
-            f"emission date {fields.emission_date_text} does not match access key "
-            f"{access_key.year:04d}-{access_key.month:02d}",
+            Detail(
+                DetailCode.DATE_DISAGREES_WITH_KEY,
+                {
+                    "printed": fields.emission_date_text or "",
+                    "key_period": f"{access_key.year:04d}-{access_key.month:02d}",
+                },
+            ),
         )
 
     if fields.total_value is None:
@@ -96,14 +106,22 @@ def validate(
 def _chosen_name(
     fields: ExtractedFields, name_source: NameSource
 ) -> tuple[str | None, ValidationOutcome | None]:
-    """The name the file should carry, or the failure that prevents naming it."""
+    """The name the file should carry, or the failure that prevents naming it.
+
+    A printed name made only of characters Windows cannot store is a failure, not
+    an empty space in the file name: the name would then say less than the note
+    does, and the caller is told which value to look at instead.
+    """
     if name_source is NameSource.RECIPIENT:
-        if fields.recipient is None or not fields.recipient.strip():
-            return None, failure(FailureCode.RECIPIENT_NOT_FOUND)
-        return fields.recipient.strip(), None
-    if fields.issuer is None or not fields.issuer.strip():
-        return None, failure(FailureCode.ISSUER_NOT_FOUND)
-    return fields.issuer.strip(), None
+        printed, missing = fields.recipient, FailureCode.RECIPIENT_NOT_FOUND
+    else:
+        printed, missing = fields.issuer, FailureCode.ISSUER_NOT_FOUND
+    name = (printed or "").strip()
+    if not name:
+        return None, failure(missing)
+    if not sanitize_component(name):
+        return None, failure(FailureCode.INVALID_FILENAME)
+    return name, None
 
 
 def _validated_key(
@@ -115,10 +133,10 @@ def _validated_key(
     try:
         key = AccessKey(fields.access_key_digits)
     except InvalidAccessKey as exc:
-        return None, failure(FailureCode.INVALID_ACCESS_KEY, str(exc))
+        return None, failure(FailureCode.INVALID_ACCESS_KEY, exc.detail)
     if not key.is_supported:
         return None, failure(
             FailureCode.INVALID_ACCESS_KEY,
-            f"document model {key.model} is not NF-e (55) or NFC-e (65)",
+            Detail(DetailCode.MODEL_UNSUPPORTED, {"model": key.model}),
         )
     return key, None

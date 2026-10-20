@@ -13,6 +13,7 @@ from app.core.models import (
     NameSource,
 )
 from app.core.validator import validate
+from app.core.wording import Detail, DetailCode, message
 from app.pdf.access_key import AccessKey
 
 from .fixtures.danfe_builder import make_access_key
@@ -63,13 +64,31 @@ def test_each_broken_field_stops_the_file(overrides, code):
     assert not outcome.passed
     assert outcome.failure_code is code
     assert outcome.record is None
-    assert outcome.reason, "a failure must explain itself"
+    assert message(outcome.failure_code), "a failure must explain itself"
 
 
 def test_all_zero_number_is_not_a_usable_nf_number():
     zero_key = AccessKey(make_access_key("0"))
     outcome = validate(_result(access_key_digits=zero_key.digits))
     assert outcome.failure_code is FailureCode.NF_NUMBER_INVALID
+
+
+def test_a_name_with_nothing_usable_left_is_not_a_name():
+    """A printed name of only forbidden characters cannot name a file.
+
+    This is the one case ``INVALID_FILENAME`` exists for: the name slot of the
+    file name would come out empty, which says less about the note than the note
+    itself does. Every other character is replaced rather than refused.
+    """
+    assert validate(_result(issuer="///")).failure_code is FailureCode.INVALID_FILENAME
+    assert validate(_result(issuer="...")).failure_code is FailureCode.INVALID_FILENAME
+    assert validate(
+        _result(recipient="///"), name_source=NameSource.RECIPIENT
+    ).failure_code is FailureCode.INVALID_FILENAME
+
+    assert validate(_result(issuer="A/B - COMERCIO")).passed, (
+        "the characters Windows cannot store are still replaced, not refused"
+    )
 
 
 def test_an_nfce_key_is_accepted():
@@ -84,8 +103,9 @@ def test_another_document_model_is_not_a_danfe():
     cte = AccessKey(make_access_key("5678", model="57"))
     outcome = validate(_result(access_key_digits=cte.digits))
     assert outcome.failure_code is FailureCode.INVALID_ACCESS_KEY
-    assert "55" in (outcome.reason or "")
-    assert "65" in (outcome.reason or "")
+    assert outcome.detail is not None
+    assert "55" in outcome.detail.sentence()
+    assert "65" in outcome.detail.sentence()
 
 
 def test_blocked_extraction_keeps_its_own_code():
@@ -93,11 +113,14 @@ def test_blocked_extraction_keeps_its_own_code():
         parser_id="danfe_standard",
         fields=ExtractedFields(),
         blocked_by=FailureCode.ACCESS_KEY_AMBIGUOUS,
-        blocked_detail="multiple keys found",
+        blocked_detail=Detail(
+            DetailCode.KEY_AMBIGUOUS_ANYWHERE, {"keys": "2426…, 3526…"}
+        ),
     )
     outcome = validate(result)
     assert outcome.failure_code is FailureCode.ACCESS_KEY_AMBIGUOUS
-    assert "multiple keys" in (outcome.reason or "")
+    assert outcome.detail is not None
+    assert "2426" in outcome.detail.sentence()
 
 
 def test_printed_number_absence_is_only_a_warning():

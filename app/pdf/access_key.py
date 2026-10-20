@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from ..core.wording import Detail, DetailCode
 from .text import Document, Line, Word
 
 NFE_MODEL = "55"
@@ -61,7 +62,15 @@ def digits_only(text: str) -> str:
 
 
 class InvalidAccessKey(ValueError):
-    """The digit string is not a well-formed NF-e access key."""
+    """The digit string is not a well-formed NF-e access key.
+
+    ``detail`` says which rule it broke; the sentence around it is built by
+    whoever shows it, in the reader's language.
+    """
+
+    def __init__(self, detail: Detail) -> None:
+        super().__init__(str(detail))
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -72,9 +81,11 @@ class AccessKey:
 
     def __post_init__(self) -> None:
         if len(self.digits) != KEY_LENGTH or not self.digits.isdigit():
-            raise InvalidAccessKey(f"access key must be {KEY_LENGTH} digits")
+            raise InvalidAccessKey(
+                Detail(DetailCode.KEY_LENGTH, {"expected": str(KEY_LENGTH)})
+            )
         if self.check_digit != check_digit(self.digits[:43]):
-            raise InvalidAccessKey("access key check digit does not match")
+            raise InvalidAccessKey(Detail(DetailCode.KEY_CHECK_DIGIT))
 
     @property
     def uf(self) -> str:

@@ -77,18 +77,28 @@ Windows, from a source checkout:
 The command line exits `0` when every file was renamed or generated and `1` when
 anything was skipped or failed, so it can be used from a scheduled task. XML is
 the default input; `--input pdf` keeps the previous PDF-only behaviour, and
-`--language en|pt` picks the language of the reports - by default the one chosen
-in the window, so a scheduled run reports in the language its reader reads.
+`--language en|pt` picks the language of the reports **and of the lines the run
+prints** - by default the one chosen in the window, so a scheduled run reports in
+the language its reader reads.
 
 The window has an English/Portuguese switch (top right), the **Input files**
 choice (XML, PDF or both) and the **Name in the file name** choice (issuer or
 recipient); all are stored in `%APPDATA%\DANFE_Renamer\settings.json`.
+
+After a batch, **View details** lists every file it read: the name it was given,
+or the reason it was not. The list can be narrowed to **All files**, **Only
+failures** or **Only successes** - a failure being any file that was not renamed,
+whether it was skipped or errored - and the count beside it says how much of the
+batch is showing. From there a file can be opened, copied, or found in its
+folder: **Show in folder** opens the folder the file is read from, with the file
+selected.
 
 ## What every batch produces
 
 ```text
 <output>/2026-09-25_13-51-02/
 ├── 16.09.2026_NF 1234 - Industria Exemplo Ltda - 1.234,56.pdf
+├── _unrenamed/         (only when a DANFE could not be named; see below)
 ├── batch_report.csv    (opens in Excel; one row per input file)
 ├── batch_report.json   (same rows, for machines)
 └── batch_report.html   (open in a browser to read by eye)
@@ -97,21 +107,36 @@ recipient); all are stored in `%APPDATA%\DANFE_Renamer\settings.json`.
 An XML input becomes a DANFE (NF-e) or DANFCe (NFC-e) PDF under its final name;
 the XML itself is not copied into the batch folder. The batch folder is new on
 every run; an existing file is never overwritten, and a name produced twice in
-one run is reported as a collision instead.
+one run is reported as a collision instead. The folder a batch is written into is
+never read back as input, so running the same folder a second time does not
+process the copies the first run made.
 
-The three reports are written in the language chosen in the window. Two values
-never change with it - `status` and `failure_code` - so a script can key on them;
-`failure_message` is the sentence for a person, and `reason` keeps the library's
-own words for whoever investigates. A copy that fails leaves nothing behind: a
-write something else is holding is retried before giving up, and a failed attempt
-is removed, so the folder holds only files the report accounts for.
+A file that cannot be named does not lose its document. The DANFE of an XML that
+failed - over its fields or over the copy - is generated anyway and kept in
+`_unrenamed/`, under the name of the XML it came from, and the row that reports
+the failure points at it, so the file can be read and renamed by hand. No PDF is
+kept where there is none to keep: an XML that could not be read, or that is not
+an NF-e/NFC-e, has no DANFE in it, and a PDF input is the reader's own file,
+which the batch never moved.
+
+The three reports are written in the language chosen in the window. The values a
+script keys on never change with it - `status`, `failure_code` and
+`detail_code` - while `failure_message` and `reason` are what a person reads:
+what kind of failure it was, and the one fact behind it, in that language.
+`reason` keeps the names, paths and error text the library or Windows produced
+exactly as they arrived, because that part is evidence. `output_file` is where
+the run put each file's output, inside the batch folder: the agreed name for a
+file it could name, and the `_unrenamed` copy for one it could not. A copy that
+fails leaves nothing behind: a write something else is holding is retried before
+giving up, and a failed attempt is removed, so the folder holds only files the
+report accounts for.
 
 ## Development
 
 ```bash
 py -3.12 -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements-dev.txt
-.venv/Scripts/python.exe -m pytest      # 196 tests, no confidential data needed
+.venv/Scripts/python.exe -m pytest      # 289 tests, no confidential data needed
 ```
 
 If every Python command on the machine dies with an import error from an old
@@ -124,7 +149,9 @@ Tests build their own DANFE-like PDFs with PyMuPDF and their own NF-e/NFC-e XMLs
 with the standard library (`app/tests/fixtures/danfe_builder.py`): real invoices
 are confidential and are never copied into the repository or into test output.
 Every company name, CNPJ, access key and amount in the tests and in the examples
-above is invented.
+above is invented. The XML workflow is covered as a workflow of its own
+(`app/tests/test_xml_workflow.py`): what each document is read as, what the
+converter refuses, and which file a failed note leaves behind.
 
 ### Measuring against real documents
 
@@ -194,6 +221,10 @@ Rules that keep it trustworthy:
   never overwrite, stay inside the batch folder, retry a write something else is
   holding for a moment, and leave nothing behind when a copy fails - a folder must
   hold only files a report accounts for.
+- No layer writes a sentence a person reads. A layer records a stable code and the
+  values a sentence needs (`app/core/wording.py`), and the window, the reports and
+  the console build that sentence in the language of whoever is reading. What a
+  library or Windows said travels inside it unchanged: evidence is not translated.
 - Adding a layout means adding a parser in `app/extractors/` and listing it in
   `registry.py`; nothing else changes.
 

@@ -22,6 +22,11 @@ def danfe(tmp_path):
     return path
 
 
+def _sentence(outcome) -> str:
+    """What a validation outcome says about itself, in English."""
+    return outcome.detail.sentence() if outcome.detail is not None else ""
+
+
 def extract(path):
     return detect_and_extract(load_document(path))
 
@@ -81,7 +86,7 @@ def test_unknown_layout_is_not_guessed(tmp_path):
     with pytest.raises(UnsupportedDocument) as excinfo:
         detect(load_document(path))
     assert excinfo.value.code is FailureCode.UNSUPPORTED_FORMAT
-    assert "CHAVE DE ACESSO" in excinfo.value.reason
+    assert "CHAVE DE ACESSO" in excinfo.value.detail.sentence()
 
 
 def test_access_key_conflict_with_printed_number_fails(tmp_path):
@@ -91,7 +96,7 @@ def test_access_key_conflict_with_printed_number_fails(tmp_path):
     outcome = validate(extract(path))
     assert not outcome.passed
     assert outcome.failure_code is FailureCode.NF_NUMBER_CONFLICT
-    assert "9999999" in (outcome.reason or "")
+    assert "9999999" in _sentence(outcome)
 
 
 def test_exit_date_is_never_used(tmp_path):
@@ -108,7 +113,7 @@ def test_impossible_emission_date_is_reported(tmp_path):
     assert result.blocked_by is FailureCode.EMISSION_DATE_NOT_FOUND
     outcome = validate(result)
     assert outcome.failure_code is FailureCode.EMISSION_DATE_NOT_FOUND
-    assert "31/02/2026" in (outcome.reason or "")
+    assert "31/02/2026" in _sentence(outcome)
 
 
 def test_emission_date_disagreeing_with_key_month_fails(tmp_path):
@@ -236,4 +241,7 @@ def test_key_of_a_referenced_note_does_not_win(tmp_path):
 
     result = extract(tmp_path / "devolucao-with-reference.pdf")
     assert result.fields.access_key_digits == own_key
-    assert any("Referenced note keys present" in note for note in result.warnings)
+    assert any(
+        "Keys of other notes are present" in warning.sentence()
+        for warning in result.warnings
+    )

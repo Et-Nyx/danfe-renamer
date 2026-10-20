@@ -27,14 +27,23 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .core.models import BatchSummary, InputKind, NameSource, Status
+from .core.models import BatchSummary, FileOutcome, InputKind, NameSource, Status
 from .core.pipeline import run_batch
-from .core.wording import LANGUAGES
+from .core.wording import DEFAULT_LANGUAGE, LANGUAGES, console, counted
+from .core.wording import message as failure_message
 from .gui.settings import load_language
 from .reporting.report import write_reports
 
 DEFAULT_OUTPUT_DIR_NAME = "DANFE_Renamed"
 DIAGNOSTICS_FILE_NAME = "danfe_renamer_diagnostics.txt"
+
+#: The line to print when a run finds nothing to read, per input kind: ``both`` is
+#: not the name of a file kind, so it cannot be the value the parser holds.
+NO_FILES_KEYS = {
+    InputKind.XML: "no_files_xml",
+    InputKind.PDF: "no_files_pdf",
+    InputKind.BOTH: "no_files_both",
+}
 
 
 def collect_diagnostics(*, probe_window: bool = True) -> dict[str, str]:
@@ -136,6 +145,10 @@ def collect_sources(
     previous batch output, for example) is left out. ``input_kind`` is the
     program's default: XML is the main workflow, PDFs remain available as an
     option, and ``BOTH`` reads the two together.
+
+    The folder a batch next to an added folder is written into is excluded as
+    well: it holds copies of the very notes being processed, so a run would
+    otherwise read the previous run's output back and copy it again.
     """
     suffixes = {
         InputKind.XML: {".xml"},
@@ -143,6 +156,9 @@ def collect_sources(
         InputKind.BOTH: {".pdf", ".xml"},
     }[input_kind]
     excluded = [path.resolve() for path in excluded_dirs]
+    for path in paths:
+        if path.is_dir():
+            excluded.append((path / DEFAULT_OUTPUT_DIR_NAME).resolve())
     found: list[Path] = []
     for path in paths:
         if path.is_dir():
@@ -240,11 +256,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.diagnostics:
         report_diagnostics()
         return 0
+    # One language for everything the run says: the reports and the console lines
+    # both belong to the person who set the application up.
+    language = args.language or load_language()
     if not args.sources:
-        print(
-            "Nothing to do: give one or more XML/PDF files or folders.",
-            file=sys.stderr,
-        )
+        print(console("nothing_to_do", language), file=sys.stderr)
         return 1
     input_kind = InputKind(args.input)
     excluded = [Path(args.output)] if args.output else []
@@ -254,20 +270,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit:
         sources = sources[: args.limit]
     if not sources:
-        print(f"No {input_kind.value} files found.", file=sys.stderr)
+        print(console(NO_FILES_KEYS[input_kind], language), file=sys.stderr)
         return 1
 
     output_root = None if args.dry_run else Path(
         args.output or default_output_root(sources)
     )
-    # The reports are read by the person who set the application up, so they come
-    # out in the language that person chose, wherever the batch is run from.
-    language = args.language or load_language()
     summary = run_batch(
         sources,
         output_root,
         copy_files=not args.dry_run,
-        progress=_progress_printer() if not args.verbose else None,
+        progress=_progress_printer(language) if not args.verbose else None,
         name_source=NameSource(args.name_source),
         language=language,
     )
@@ -276,46 +289,81 @@ def main(argv: list[str] | None = None) -> int:
         extra_report_directory = Path(args.report)
         write_reports(summary, directory=extra_report_directory, language=language)
 
-    print_summary(summary, verbose=args.verbose)
+    print_summary(
+        summary, verbose=args.verbose, language=language, dry_run=args.dry_run
+    )
     if extra_report_directory is not None:
-        print(f"Reports also written to: {extra_report_directory}")
+        print(console("also_written", language, path=extra_report_directory))
     return 0 if summary.skipped == 0 and summary.errors == 0 else 1
 
 
-def _progress_printer():
+def _progress_printer(language: str = DEFAULT_LANGUAGE):
     def progress(index: int, total: int, source: Path) -> None:
-        print(f"\rProcessing {index} of {total}...", end="", file=sys.stderr)
+        line = console("processing", language, index=index, total=total)
+        print(f"\r{line}", end="", file=sys.stderr)
         if index == total:
             print(file=sys.stderr)
 
     return progress
 
 
-def print_summary(summary: BatchSummary, *, verbose: bool = False) -> None:
-    """Print the batch summary, and optionally one line per file."""
+def print_summary(
+    summary: BatchSummary,
+    *,
+    verbose: bool = False,
+    language: str = DEFAULT_LANGUAGE,
+    dry_run: bool = False,
+) -> None:
+    """Print the batch summary, and optionally one line per file.
+
+    The counts are the ones the window and the reports print, read from the same
+    table, so the console cannot drift from what the reports say. They say what
+    the run found, not what it wrote, which is why a dry run says so first: a
+    reader must not take "renamed" for a file that is on disk.
+    """
+    if dry_run:
+        print(console("dry_run", language))
     if verbose:
         for outcome in summary.outcomes:
+            # The marker is the stable part of the line, like the reports'
+            # ``status`` column; the sentence beside it is in the reader's
+            # language.
             marker = {
                 Status.SUCCESS: "OK  ",
                 Status.SKIPPED: "SKIP",
                 Status.ERROR: "ERR ",
             }[outcome.status]
-            detail = outcome.target_filename or outcome.reason or ""
+            detail = outcome.target_filename or _spoken_reason(outcome, language)
             print(f"{marker} {outcome.source_path.name}\n     -> {detail}")
             for warning in outcome.warnings:
-                print(f"     ! {warning}")
+                print(f"     ! {warning.sentence(language)}")
 
-    print(f"{summary.total} files analyzed")
-    print(f"{summary.succeeded} renamed successfully")
-    print(f"{summary.converted} converted from XML")
-    print(f"{summary.skipped} skipped")
-    print(f"{summary.errors} errors")
+    print(counted("analyzed", summary.total, language))
+    print(counted("renamed", summary.succeeded, language))
+    print(counted("converted", summary.converted, language))
+    print(counted("skipped", summary.skipped, language))
+    print(counted("errors", summary.errors, language))
     for code, count in summary.failures_by_code().items():
-        print(f"  {count} x {code.value}")
+        print(f"  {count} x {code.value}: {failure_message(code, language)}")
     if summary.output_directory is not None:
-        print(f"Output: {summary.output_directory}")
+        print(console("output", language, path=summary.output_directory))
     for kind, path in summary.report_paths.items():
-        print(f"Report ({kind}): {path}")
+        print(console("report", language, kind=kind, path=path))
+
+
+def _spoken_reason(outcome: FileOutcome, language: str) -> str:
+    """What went wrong, in the language of the run.
+
+    The failure's own sentence, then the fact behind it: a library's words inside
+    that fact are quoted as they arrived, because they cannot be translated.
+    """
+    sentence = (
+        failure_message(outcome.failure_code, language)
+        if outcome.failure_code is not None
+        else ""
+    )
+    detail = outcome.detail.sentence(language) if outcome.detail is not None else ""
+    return " - ".join(part for part in (sentence, detail) if part)
 
 
 if __name__ == "__main__":  # pragma: no cover - manual entry point

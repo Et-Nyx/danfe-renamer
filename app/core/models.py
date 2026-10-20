@@ -12,6 +12,7 @@ from enum import Enum
 from pathlib import Path
 
 from ..pdf.access_key import AccessKey
+from .wording import Detail
 from .wording import message as failure_message
 
 
@@ -150,8 +151,8 @@ class ExtractionResult:
     parser_id: str
     fields: ExtractedFields
     blocked_by: FailureCode | None = None
-    blocked_detail: str | None = None
-    warnings: tuple[str, ...] = ()
+    blocked_detail: Detail | None = None
+    warnings: tuple[Detail, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -165,20 +166,24 @@ class ValidationOutcome:
     status: CheckStatus
     record: ValidatedRecord | None = None
     failure_code: FailureCode | None = None
-    reason: str | None = None
-    warnings: tuple[str, ...] = ()
+    detail: Detail | None = None
+    warnings: tuple[Detail, ...] = ()
 
     @property
     def passed(self) -> bool:
         return self.status is not CheckStatus.FAIL
 
 
-def failure(code: FailureCode, detail: str | None = None) -> ValidationOutcome:
-    """Build a FAIL outcome, optionally with a specific human explanation."""
-    reason = FAILURE_MESSAGES[code]
-    if detail:
-        reason = f"{reason} ({detail})"
-    return ValidationOutcome(status=CheckStatus.FAIL, failure_code=code, reason=reason)
+def failure(code: FailureCode, detail: Detail | None = None) -> ValidationOutcome:
+    """Build a FAIL outcome, optionally with the fact behind it.
+
+    The sentence a person reads is not built here: the code says what kind of
+    failure it was and the detail says which one exactly, and whichever surface
+    shows the outcome puts the two together in its reader's language.
+    """
+    return ValidationOutcome(
+        status=CheckStatus.FAIL, failure_code=code, detail=detail
+    )
 
 
 @dataclass
@@ -188,7 +193,8 @@ class FileOutcome:
     source_path: Path
     status: Status
     failure_code: FailureCode | None = None
-    reason: str | None = None
+    #: The one fact behind the failure, in the reader's language when shown.
+    detail: Detail | None = None
     parser_id: str | None = None
     access_key: str | None = None
     nf_number: str | None = None
@@ -197,6 +203,10 @@ class FileOutcome:
     issuer: str | None = None
     target_filename: str | None = None
     destination_path: Path | None = None
+    #: True when the run wrote this file's PDF without its agreed name - it was
+    #: generated from an XML that could not be named, so it is in the batch's
+    #: ``_unrenamed`` folder under the name of the XML it came from.
+    unnamed: bool = False
     recipient: str | None = None
     name_source: str | None = None
     #: ``pdf`` or ``xml``: the file that was read.
@@ -205,7 +215,9 @@ class FileOutcome:
     document_model: str | None = None
     #: True when the output PDF was generated from an XML by this run.
     generated: bool = False
-    warnings: list[str] = field(default_factory=list)
+    #: Everything the run recorded about this file besides its outcome, in the
+    #: reader's language when shown.
+    warnings: list[Detail] = field(default_factory=list)
     duration_seconds: float = 0.0
 
     @property

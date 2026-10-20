@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+from enum import Enum
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -25,7 +26,6 @@ from .. import __version__
 from ..cli import collect_sources, default_output_root
 from ..core.wording import message as failure_message
 from ..core.models import (
-    FAILURE_MESSAGES,
     BatchSummary,
     FileOutcome,
     InputKind,
@@ -130,17 +130,40 @@ def open_path(path: Path) -> None:
         subprocess.Popen(["xdg-open", str(path)])
 
 
+def explorer_command(path: Path, *, select: bool) -> str:
+    """One command line for Explorer, quoted the way Explorer parses it.
+
+    Explorer reads its own command line rather than an argument list, and the
+    quotes belong around the path alone. Handed the list ``["explorer",
+    "/select,C:\\a b\\c.pdf"]``, :mod:`subprocess` quotes the switch and the path
+    together, and Explorer does not parse that: it opens its default folder
+    instead. Only a path containing a space shows it, so a batch in a folder
+    without one appeared to work. The line is built here and passed as one
+    string, which nothing re-quotes.
+
+    ``abspath`` also gives Explorer the absolute path it asks for, in Windows'
+    own separators. It leaves a trailing separator only on a drive root, which
+    holds no space and is therefore never quoted - a backslash before the
+    closing quote would escape it.
+    """
+    text = os.path.abspath(path)
+    if " " in text:
+        text = f'"{text}"'
+    return f"explorer {'/select,' if select else ''}{text}"
+
+
 def reveal_path(path: Path) -> None:
     """Show a path in the desktop's file manager, with the file selected.
 
     A file that is gone still has a folder worth opening, so the folder is what
-    gets shown then. Explorer takes the switch and the path as one argument:
-    splitting them loses a path that contains spaces.
+    gets shown then.
     """
     folder = path if path.is_dir() else path.parent
     if sys.platform.startswith("win"):
-        target = f"/select,{path}" if path.exists() else str(folder)
-        subprocess.Popen(["explorer", target])
+        if path.exists():
+            subprocess.Popen(explorer_command(path, select=True))
+        else:
+            subprocess.Popen(explorer_command(folder, select=False))
     elif sys.platform == "darwin" and path.exists():
         subprocess.Popen(["open", "-R", str(path)])
     else:
@@ -150,32 +173,56 @@ def reveal_path(path: Path) -> None:
 def failure_sentence(outcome: FileOutcome, language: str) -> str:
     """What went wrong, short enough for a column and in the reader's language.
 
-    The recorded ``reason`` is not what goes here. For XML, PDF and write
-    failures it is the library's own words - a path and a Windows error code -
-    which is the wrong language and far too long for a column; the detail pane
-    is where that belongs. A failure without a code keeps its reason.
+    The sentence belongs to the failure code, not to the recorded detail: the
+    detail is the specific fact behind it, and it has a line of its own.
     """
     if outcome.failure_code is None:
-        return (outcome.reason or "").strip()
+        return outcome_cause(outcome, language)
     return failure_message(outcome.failure_code, language)
 
 
-def outcome_cause(outcome: FileOutcome) -> str:
-    """What the layer recorded beyond the catalogue sentence for this code.
+def outcome_cause(outcome: FileOutcome, language: str) -> str:
+    """The fact behind the failure, as a sentence in the reader's language.
 
-    ``reason`` is the domain layer's own words, and it is one of three things:
-    the catalogue sentence, that sentence followed by the specific detail, or -
-    from the filesystem and XML layers - the detail alone. Whatever the
-    catalogue already says is dropped, because the rest is the whole point: a
-    locked file, a value that disagrees with the access key.
+    The detail is recorded as a code and the values its frame needs, so this is
+    where it becomes words - once, for the pane and for whoever copies it out. A
+    library's own words inside the frame stay exactly as they arrived: a
+    ``[WinError 32]`` cannot be translated.
     """
-    recorded = (outcome.reason or "").strip()
-    if not recorded:
-        return ""
-    catalogue = FAILURE_MESSAGES.get(outcome.failure_code, "") if outcome.failure_code else ""
-    if catalogue and recorded.startswith(catalogue):
-        recorded = recorded[len(catalogue) :].strip()
-    return recorded
+    return outcome.detail.sentence(language) if outcome.detail is not None else ""
+
+
+class DetailsFilter(str, Enum):
+    """Which of a batch's files the details list is showing.
+
+    A batch is read for two reasons - to see what needs attention and to confirm
+    what was renamed - and one long list serves both badly. "Failed" is every
+    file that was not renamed, the ones skipped over their data included: those
+    are the rows somebody has to act on, and they are the ones the summary counts
+    apart from the rest.
+    """
+
+    ALL = "all"
+    FAILED = "failed"
+    SUCCESSFUL = "successful"
+
+
+#: Each choice of :class:`DetailsFilter` and the string that labels it, so the
+#: radio buttons and their tests name the same three.
+DETAILS_FILTER_KEYS = {
+    DetailsFilter.ALL: "filter_all",
+    DetailsFilter.FAILED: "filter_failed",
+    DetailsFilter.SUCCESSFUL: "filter_successful",
+}
+
+
+def keeps_row(outcome: FileOutcome, choice: DetailsFilter) -> bool:
+    """Whether one file's row belongs in the list under the chosen filter."""
+    if choice is DetailsFilter.SUCCESSFUL:
+        return outcome.succeeded
+    if choice is DetailsFilter.FAILED:
+        return not outcome.succeeded
+    return True
 
 
 def build_window() -> "RenamerWindow":
@@ -200,6 +247,13 @@ class RenamerWindow:
         self.details_table: ttk.Treeview | None = None
         self.detail_text: tk.Text | None = None
         self.details_menu: tk.Menu | None = None
+        self.open_copy_menu_index: int | None = None
+        # The filter outlives the window it is shown in, so a language change -
+        # which rebuilds that window - does not silently show every row again.
+        self.details_filter_var = tk.StringVar(value=DetailsFilter.ALL.value)
+        self.filter_label: ttk.Label | None = None
+        self.filter_buttons: dict[DetailsFilter, ttk.Radiobutton] = {}
+        self.filter_count_label: ttk.Label | None = None
         self._events: queue.Queue = queue.Queue()
         self._running = False
 
@@ -475,12 +529,13 @@ class RenamerWindow:
         self._add_sources(self._drop_paths(str(event.data)))
 
     def _add_sources(self, paths: list[Path]) -> None:
-        excluded = []
-        if self.summary is not None and self.summary.output_directory is not None:
-            excluded.append(self.summary.output_directory)
-        for found in collect_sources(
-            paths, excluded, input_kind=self.input_kind
-        ):
+        """Add everything in ``paths`` that this batch could read.
+
+        ``collect_sources`` leaves out the folder a batch is written into next to
+        an added folder, so adding the same folder again does not bring this
+        application's own previous output back in as input.
+        """
+        for found in collect_sources(paths, [], input_kind=self.input_kind):
             if found not in self.selected:
                 self.selected.append(found)
         self._refresh_selection()
@@ -633,6 +688,11 @@ class RenamerWindow:
     def reset_for_next_batch(self) -> None:
         self.summary = None
         self.selected.clear()
+        # The list describes the batch that just went away, so it goes with it
+        # rather than showing rows that no longer point at anything - and the
+        # next batch's list opens whole, whatever this one was narrowed to.
+        self._close_details()
+        self.details_filter_var.set(DetailsFilter.ALL.value)
         self.progress.configure(value=0)
         self.progress_label.configure(text="")
         self._refresh_selection()
@@ -665,6 +725,11 @@ class RenamerWindow:
         window.minsize(720, 460)
         window.transient(self.root)
 
+        # The filter is packed before the two panes below it so it keeps its
+        # height whatever the window is resized to; Tk gives out space in
+        # packing order, and they are the ones that can yield.
+        self._build_details_filter(window)
+
         table = ttk.Treeview(
             window,
             columns=("status", "target", "reason"),
@@ -683,12 +748,66 @@ class RenamerWindow:
         table.column("reason", width=280)
         table.pack(fill="both", expand=True, side="top")
 
+        self._fill_details_rows()
+
+        self._build_details_actions(window)
+
+        table.bind("<<TreeviewSelect>>", self._refresh_details_actions)
+        table.bind("<Double-1>", self._on_details_double_click)
+        table.bind("<Button-3>", self._on_details_right_click)
+        table.bind("<Control-c>", self._on_details_copy_names)
+        window.protocol("WM_DELETE_WINDOW", self._close_details)
+        self._refresh_details_actions()
+
+    def _build_details_filter(self, window: tk.Toplevel) -> None:
+        """The row above the list: which of the batch's files are shown.
+
+        A long batch is two lists in one - the files that need attention and the
+        files that went through - and the count on the right is what keeps a
+        narrowed list from reading as one that came up short.
+        """
+        t = self.translate
+        bar = ttk.Frame(window, padding=(10, 10, 10, 0))
+        bar.pack(fill="x", side="top")
+
+        self.filter_label = ttk.Label(bar)
+        self.filter_label.configure(text=t("filter_label"))
+        self.filter_label.pack(side="left", padx=(0, 10))
+
+        self.filter_buttons: dict[DetailsFilter, ttk.Radiobutton] = {}
+        for choice, key in DETAILS_FILTER_KEYS.items():
+            button = ttk.Radiobutton(
+                bar,
+                variable=self.details_filter_var,
+                value=choice.value,
+                command=self.apply_details_filter,
+            )
+            button.configure(text=t(key))
+            button.pack(side="left", padx=(0, 12))
+            self.filter_buttons[choice] = button
+
+        self.filter_count_label = ttk.Label(bar, foreground="#555555")
+        self.filter_count_label.pack(side="right")
+
+    def _fill_details_rows(self) -> None:
+        """Put the rows the filter keeps into the list, and say how many.
+
+        The row's id stays the index of its outcome in the batch, so the filter
+        decides what is listed and nothing else: what a row points at does not
+        move when the list is narrowed.
+        """
+        table = self.details_table
+        t = self.translate
+        table.delete(*table.get_children())
         status_names = {
             Status.SUCCESS: t("status_success"),
             Status.SKIPPED: t("status_skipped"),
             Status.ERROR: t("status_error"),
         }
+        shown = 0
         for index, outcome in enumerate(self.summary.outcomes):
+            if not keeps_row(outcome, self.details_filter):
+                continue
             status = status_names[outcome.status]
             if outcome.status is Status.SUCCESS and outcome.generated:
                 status = t("status_generated")
@@ -700,17 +819,24 @@ class RenamerWindow:
                 values=(
                     status,
                     outcome.target_filename or "-",
-                    failure_sentence(outcome, self.translate.language),
+                    failure_sentence(outcome, t.language),
                 ),
             )
+            shown += 1
+        self.filter_count_label.configure(
+            text=t("filter_count", shown=shown, total=self.summary.total)
+        )
 
-        self._build_details_actions(window)
+    @property
+    def details_filter(self) -> DetailsFilter:
+        """Which rows the open list is limited to."""
+        return DetailsFilter(self.details_filter_var.get())
 
-        table.bind("<<TreeviewSelect>>", self._refresh_details_actions)
-        table.bind("<Double-1>", self._on_details_double_click)
-        table.bind("<Button-3>", self._on_details_right_click)
-        table.bind("<Control-c>", self._on_details_copy_names)
-        window.protocol("WM_DELETE_WINDOW", self._close_details)
+    def apply_details_filter(self) -> None:
+        """Redraw the list for the chosen rows; the batch itself is untouched."""
+        if self.summary is None or self.details_table is None:
+            return
+        self._fill_details_rows()
         self._refresh_details_actions()
 
     def _build_details_actions(self, window: tk.Toplevel) -> None:
@@ -767,6 +893,8 @@ class RenamerWindow:
         self.details_menu = menu
         menu.add_command(label=t("open_original"), command=self.open_selected_file)
         menu.add_command(label=t("open_copy"), command=self.open_selected_copy)
+        # Remembered so the label can follow the row the menu will act on.
+        self.open_copy_menu_index = menu.index("end")
         menu.add_command(label=t("show_in_folder"), command=self.reveal_selected_file)
         menu.add_separator()
         menu.add_command(label=t("copy_name"), command=self.copy_selected_names)
@@ -840,7 +968,7 @@ class RenamerWindow:
                 + translate_failure(outcome.failure_code, t)
                 + f" ({outcome.failure_code.value})"
             )
-            cause = outcome_cause(outcome)
+            cause = outcome_cause(outcome, t.language)
             if cause:
                 rows.append(f"{t('field_detail')}: {cause}")
         rows += [
@@ -860,7 +988,11 @@ class RenamerWindow:
             f"{t('field_duration')}: {t('seconds', value=outcome.duration_seconds)}",
         ]
         if outcome.warnings:
-            rows.append(t("field_warnings") + ": " + "; ".join(outcome.warnings))
+            rows.append(
+                t("field_warnings")
+                + ": "
+                + "; ".join(warning.sentence(t.language) for warning in outcome.warnings)
+            )
         return "\n".join(rows)
 
     def _refresh_details_actions(self, _event=None) -> None:
@@ -868,6 +1000,7 @@ class RenamerWindow:
         table = self.details_table
         if table is None or not table.winfo_exists():
             return
+        t = self.translate
         outcomes = self._selected_outcomes()
         focused = self._focused_outcome()
         self._set_detail_text("\n\n".join(self._describe_outcome(o) for o in outcomes))
@@ -882,6 +1015,14 @@ class RenamerWindow:
         written = focused.destination_path if focused is not None else None
         has_copy = written is not None and written.exists()
         self.open_copy_button.state(["!disabled"] if has_copy else ["disabled"])
+        # A file that could not be named still has a PDF, and the button says
+        # which it is about to open rather than promising a name that is not
+        # on it.
+        unnamed = focused is not None and focused.unnamed
+        label = t("open_unnamed") if unnamed else t("open_copy")
+        self.open_copy_button.configure(text=label)
+        if self.details_menu is not None and self.open_copy_menu_index is not None:
+            self.details_menu.entryconfigure(self.open_copy_menu_index, label=label)
 
     # -- the actions
 
@@ -988,6 +1129,10 @@ class RenamerWindow:
         self.details_table = None
         self.detail_text = None
         self.details_menu = None
+        self.filter_label = None
+        self.filter_buttons = {}
+        self.filter_count_label = None
+        self.open_copy_menu_index = None
 
     def _on_close(self) -> None:
         """Closing mid-run is allowed; a batch stops at the next file.

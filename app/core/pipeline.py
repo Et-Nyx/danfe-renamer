@@ -9,6 +9,10 @@ For an XML source the converter runs first (XML -> PDF in a staging folder),
 but validation, naming, collision checks and the copy itself stay in this
 module: the converter only produces the PDF that the renamer then names.
 
+A file that cannot be named does not lose its document: the PDF of an XML that
+failed is kept in the batch's ``_unrenamed`` folder, under the name of the XML
+it came from, so somebody can finish the job by hand.
+
 The originals are opened read-only; the only writes are the copies (or the
 generated PDFs) in the batch directory.
 """
@@ -28,13 +32,15 @@ from ..reporting.report import write_reports
 from ..xml.invoice import XmlInvoiceError, inspect_xml
 from ..xml.render import XmlRenderError, render_xml_to_pdf
 from .detector import UnsupportedDocument, detect
-from .wording import DEFAULT_LANGUAGE
+from .wording import DEFAULT_LANGUAGE, Detail, DetailCode
 from .filesystem import (
+    UNRENAMED_DIRECTORY_NAME,
     OutputCollision,
     OutputWriteError,
     copy_into_batch,
     create_batch_directory,
     path_key,
+    unused_path,
 )
 from .filename import build_filename
 from .models import (
@@ -83,25 +89,32 @@ def analyze_file(
     try:
         document = load_document(source)
     except PdfReadError as exc:
-        return _failed(outcome, _code(exc.code), str(exc), started)
+        return _failed(outcome, _code(exc.code), exc.detail, started)
 
     try:
         detection = detect(document)
         result = detection.parser.extract(document)
     except UnsupportedDocument as exc:
-        return _failed(outcome, exc.code, exc.reason, started)
+        return _failed(outcome, exc.code, exc.detail, started)
     except Exception as exc:  # pragma: no cover - unexpected parser failure
         return _failed(
             outcome,
             FailureCode.UNEXPECTED_EXTRACTION_ERROR,
-            f"{type(exc).__name__}: {exc}",
+            Detail(DetailCode.EVIDENCE, {"error": f"{type(exc).__name__}: {exc}"}),
             started,
             status=Status.ERROR,
         )
 
     outcome.parser_id = detection.parser.parser_id
     outcome.access_key = _join_key(result.fields.access_key_digits)
-    outcome.emission_date = result.fields.emission_date_text
+    # The date the note carries, in the one format the rest of the application
+    # reports it in: the XML path writes the same string, and the file name is
+    # built from it too.
+    outcome.emission_date = (
+        format_br_date(result.fields.emission_date)
+        if result.fields.emission_date is not None
+        else result.fields.emission_date_text
+    )
     outcome.total_value = result.fields.total_value
     outcome.issuer = result.fields.issuer
     outcome.recipient = result.fields.recipient
@@ -111,7 +124,7 @@ def analyze_file(
     validation = validate(result, name_source=name_source)
     if not validation.passed:
         outcome.failure_code = validation.failure_code
-        outcome.reason = validation.reason
+        outcome.detail = validation.detail
         outcome.duration_seconds = time.perf_counter() - started
         return FileAnalysis(outcome=outcome, output_source=source)
 
@@ -150,7 +163,7 @@ def analyze_xml(
         return _failed(
             outcome,
             exc.code,
-            exc.reason,
+            exc.detail,
             started,
             source_kind=SourceKind.XML,
             render_xml=source,
@@ -171,7 +184,7 @@ def analyze_xml(
     validation = validate(invoice.to_result(), name_source=name_source)
     if not validation.passed:
         outcome.failure_code = validation.failure_code
-        outcome.reason = validation.reason
+        outcome.detail = validation.detail
         outcome.duration_seconds = time.perf_counter() - started
         return FileAnalysis(
             outcome=outcome,
@@ -197,16 +210,6 @@ def analyze_xml(
     )
 
 
-def analyze_source(
-    source: Path, *, name_source: NameSource = NameSource.EMITENTE
-) -> FileAnalysis:
-    """Analyse a PDF or an XML by its suffix."""
-    path = Path(source)
-    if path.suffix.lower() == ".xml":
-        return analyze_xml(path, name_source=name_source)
-    return analyze_file(path, name_source=name_source)
-
-
 def run_batch(
     sources: Iterable[Path],
     output_root: Path | None,
@@ -224,10 +227,19 @@ def run_batch(
     the file names carry, and ``language`` is the one the reports are written in;
     the stable values in them are the same in every language.
 
+    Copying needs somewhere to copy to, so a run that copies requires
+    ``output_root``: ``None`` is not "the current directory", which is a place no
+    caller means to write a batch into.
+
     Cyclic garbage collection is paused for the duration of the batch; see
     :func:`_pause_garbage_collection` for why that matters when a window runs the
     batch on a worker thread.
     """
+    if copy_files and output_root is None:
+        raise ValueError(
+            "copy_files=True needs an output_root to write into; "
+            "pass copy_files=False to analyse without writing"
+        )
     with _pause_garbage_collection():
         return _run_batch(
             sources,
@@ -296,9 +308,11 @@ def _run_batch(
     ]
 
     if copy_files:
-        batch_directory = create_batch_directory(
-            Path(output_root) if output_root else Path.cwd(), started_at
-        )
+        # Not a fallback: run_batch refuses to copy without an output root, so a
+        # batch is never written into whatever directory the process happens to
+        # be in.
+        assert output_root is not None
+        batch_directory = create_batch_directory(Path(output_root), started_at)
         summary.output_directory = batch_directory
 
     # XML fields are needed before the PDFs run so a successful PDF can use the
@@ -318,6 +332,7 @@ def _run_batch(
         if copy_files and xml_sources
         else None
     )
+    staging_directory = Path(staging.name) if staging is not None else None
     processed = 0
 
     def report(source: Path) -> None:
@@ -352,11 +367,15 @@ def _run_batch(
             report(source)
             analysis = xml_analyses[source]
             outcome = analysis.outcome
+            if outcome.succeeded:
+                outcome = _skip_duplicate_note(outcome, notes)
             if not outcome.succeeded:
-                summary.outcomes.append(outcome)
-                continue
-            outcome = _skip_duplicate_note(outcome, notes)
-            if not outcome.succeeded:
+                # The name is not coming; the document itself still can. A note
+                # already in the batch is the exception: its copy is right here.
+                if outcome.failure_code is not FailureCode.DUPLICATE_NOTE:
+                    outcome = _keep_generated_pdf(
+                        outcome, analysis, batch_directory, staging_directory
+                    )
                 summary.outcomes.append(outcome)
                 continue
             if not copy_files:
@@ -364,14 +383,18 @@ def _run_batch(
                 summary.outcomes.append(outcome)
                 _remember_note(outcome, notes)
                 continue
-            if batch_directory is None or staging is None or analysis.target_filename is None:
+            if (
+                batch_directory is None
+                or staging_directory is None
+                or analysis.target_filename is None
+            ):
                 outcome.status = Status.ERROR
                 outcome.failure_code = FailureCode.OUTPUT_WRITE_ERROR
-                outcome.reason = "no batch directory available for the generated PDF"
+                outcome.detail = Detail(DetailCode.NO_BATCH_DIRECTORY)
                 summary.outcomes.append(outcome)
                 continue
 
-            staged_pdf = Path(staging.name) / f"{len(summary.outcomes):05d}.pdf"
+            staged_pdf = staging_directory / f"{len(summary.outcomes):05d}.pdf"
             try:
                 render_xml_to_pdf(
                     source, staged_pdf, model=analysis.model or "55"
@@ -380,7 +403,7 @@ def _run_batch(
                 outcome.status = Status.ERROR
                 outcome.failure_code = FailureCode.PDF_GENERATION_ERROR
                 outcome.generated = False
-                outcome.reason = str(exc)
+                outcome.detail = exc.detail
                 summary.outcomes.append(outcome)
                 continue
 
@@ -394,6 +417,10 @@ def _run_batch(
             )
             if not outcome.succeeded:
                 outcome.generated = False
+                # The PDF is made and verified; only putting it in place failed.
+                outcome = _keep_generated_pdf(
+                    outcome, analysis, batch_directory, staging_directory, staged_pdf
+                )
             summary.outcomes.append(outcome)
             if outcome.succeeded:
                 _remember_note(outcome, notes)
@@ -404,7 +431,7 @@ def _run_batch(
                 source_path=source,
                 status=Status.SKIPPED,
                 failure_code=FailureCode.UNSUPPORTED_FORMAT,
-                reason="Only PDF and XML files are supported",
+                detail=Detail(DetailCode.ONLY_PDF_AND_XML),
             )
             summary.outcomes.append(outcome)
     finally:
@@ -470,59 +497,67 @@ def _with_xml_data(
 
 def _record_differences(
     pdf_record: ValidatedRecord | None, xml_record: ValidatedRecord
-) -> list[str]:
-    """Explain where the PDF and its XML disagree; the XML value is used."""
+) -> list[Detail]:
+    """Explain where the PDF and its XML disagree; the XML value is used.
+
+    One detail per field, so each disagreement is a sentence of its own, and then
+    the one that says which of the two values the file name was built from.
+    """
     if pdf_record is None:
         return []
-    differences: list[str] = []
+    differences: list[Detail] = []
     if pdf_record.nf_number != xml_record.nf_number:
         differences.append(
-            f"NF number (PDF {pdf_record.nf_number}, XML {xml_record.nf_number})"
+            Detail(
+                DetailCode.PDF_XML_NUMBER_DIFFERS,
+                {"pdf": pdf_record.nf_number, "xml": xml_record.nf_number},
+            )
         )
     if pdf_record.emission_date != xml_record.emission_date:
         differences.append(
-            "emission date "
-            f"(PDF {format_br_date(pdf_record.emission_date)}, "
-            f"XML {format_br_date(xml_record.emission_date)})"
+            Detail(
+                DetailCode.PDF_XML_DATE_DIFFERS,
+                {
+                    "pdf": format_br_date(pdf_record.emission_date),
+                    "xml": format_br_date(xml_record.emission_date),
+                },
+            )
         )
     pdf_total = (
-        money_to_decimal(pdf_record.total_value)
-        if pdf_record.total_value
-        else None
+        money_to_decimal(pdf_record.total_value) if pdf_record.total_value else None
     )
     xml_total = (
-        money_to_decimal(xml_record.total_value)
-        if xml_record.total_value
-        else None
+        money_to_decimal(xml_record.total_value) if xml_record.total_value else None
     )
     if pdf_total != xml_total:
         differences.append(
-            f"total value (PDF {pdf_record.total_value or '-'}, "
-            f"XML {xml_record.total_value or '-'})"
+            Detail(
+                DetailCode.PDF_XML_TOTAL_DIFFERS,
+                {
+                    "pdf": pdf_record.total_value or "-",
+                    "xml": xml_record.total_value or "-",
+                },
+            )
         )
     if xml_record.name_source is NameSource.RECIPIENT:
-        pdf_name, xml_name, label = (
+        pdf_name, xml_name, code = (
             pdf_record.recipient,
             xml_record.recipient,
-            "recipient",
+            DetailCode.PDF_XML_RECIPIENT_DIFFERS,
         )
     else:
-        pdf_name, xml_name, label = (
+        pdf_name, xml_name, code = (
             pdf_record.issuer,
             xml_record.issuer,
-            "issuer",
+            DetailCode.PDF_XML_ISSUER_DIFFERS,
         )
     if normalize_text(pdf_name or "") != normalize_text(xml_name or ""):
         differences.append(
-            f"{label} (PDF {pdf_name or '-'}, XML {xml_name or '-'})"
+            Detail(code, {"pdf": pdf_name or "-", "xml": xml_name or "-"})
         )
     if not differences:
         return []
-    return [
-        "XML and PDF disagree on "
-        + "; ".join(differences)
-        + "; the XML value is used for the file name"
-    ]
+    return [*differences, Detail(DetailCode.XML_VALUE_USED)]
 
 
 def _skip_duplicate_note(
@@ -545,9 +580,8 @@ def _skip_duplicate_note(
     outcome.status = Status.SKIPPED
     outcome.failure_code = FailureCode.DUPLICATE_NOTE
     outcome.generated = False
-    outcome.reason = (
-        "Same note as "
-        f"{first.source_path.name} (already used in this batch)"
+    outcome.detail = Detail(
+        DetailCode.DUPLICATE_OF, {"name": first.source_path.name}
     )
     outcome.destination_path = None
     return outcome
@@ -557,6 +591,52 @@ def _remember_note(outcome: FileOutcome, notes: dict[str, FileOutcome]) -> None:
     """Remember a note only after its output was accepted."""
     if outcome.succeeded and outcome.access_key:
         notes.setdefault(outcome.access_key.replace(" ", ""), outcome)
+
+
+def _keep_generated_pdf(
+    outcome: FileOutcome,
+    analysis: FileAnalysis,
+    batch_directory: Path | None,
+    staging_directory: Path | None,
+    staged_pdf: Path | None = None,
+) -> FileOutcome:
+    """Keep the PDF of an XML that could not be given its agreed name.
+
+    A file that failed is still a document somebody has to be able to read, and
+    an XML has no PDF anywhere until this run makes one. So the DANFE is made
+    anyway and left in the batch's ``_unrenamed`` folder under the name of the
+    XML it came from, with the row pointing at it, and the file can be renamed
+    by hand.
+
+    What went wrong is not this function's business: the recorded detail is the
+    answer to that, and it is left exactly as the layer that failed recorded it. A
+    PDF that cannot be made or put in place is simply not there - the reader
+    needs "recipient not found", not a second failure about a file they never
+    asked for.
+
+    There is nothing to keep when the run has no PDF of its own to offer: an
+    XML that could not be read, or that is not an NF-e/NFC-e, is left with no
+    model to render with, and a dry run writes nothing at all.
+    """
+    if analysis.model is None or batch_directory is None or staging_directory is None:
+        return outcome
+
+    source = Path(outcome.source_path)
+    folder = batch_directory / UNRENAMED_DIRECTORY_NAME
+    destination = unused_path(folder, f"{source.stem}.pdf")
+    try:
+        if staged_pdf is None:
+            staged_pdf = unused_path(staging_directory, f"{source.stem}.pdf")
+            render_xml_to_pdf(source, staged_pdf, model=analysis.model)
+        folder.mkdir(parents=True, exist_ok=True)
+        copy_into_batch(staged_pdf, destination, batch_directory=batch_directory)
+    except (XmlRenderError, OutputCollision, OutputWriteError, OSError):
+        return outcome
+
+    outcome.destination_path = destination
+    outcome.unnamed = True
+    outcome.generated = True
+    return outcome
 
 
 def _write_copy(
@@ -574,9 +654,8 @@ def _write_copy(
     if key in written:
         outcome.status = Status.SKIPPED
         outcome.failure_code = FailureCode.OUTPUT_COLLISION
-        outcome.reason = (
-            "Output filename already exists (same name produced by "
-            f"{written[key].name})"
+        outcome.detail = Detail(
+            DetailCode.NAME_ALREADY_PRODUCED, {"name": written[key].name}
         )
         outcome.destination_path = None
         return outcome
@@ -586,12 +665,15 @@ def _write_copy(
     except OutputCollision as exc:
         outcome.status = Status.SKIPPED
         outcome.failure_code = FailureCode.OUTPUT_COLLISION
-        outcome.reason = str(exc)
+        outcome.detail = exc.detail
         return outcome
     except OutputWriteError as exc:
         outcome.status = Status.ERROR
         outcome.failure_code = FailureCode.OUTPUT_WRITE_ERROR
-        outcome.reason = str(exc)
+        outcome.detail = exc.detail
+        if exc.leftover is not None:
+            # The folder is holding a partial copy: this row has to say so.
+            outcome.warnings.append(exc.leftover)
         return outcome
 
     written[key] = Path(written_source or source)
@@ -615,7 +697,7 @@ def _deduplicate(sources: Iterable[Path]) -> list[Path]:
 def _failed(
     outcome: FileOutcome,
     code: FailureCode,
-    reason: str | None,
+    detail: Detail | None,
     started: float,
     *,
     status: Status = Status.SKIPPED,
@@ -625,7 +707,7 @@ def _failed(
 ) -> FileAnalysis:
     outcome.status = status
     outcome.failure_code = code
-    outcome.reason = reason
+    outcome.detail = detail
     outcome.duration_seconds = time.perf_counter() - started
     return FileAnalysis(
         outcome=outcome,

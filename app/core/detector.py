@@ -12,15 +12,20 @@ from ..extractors.base import DanfeExtractor
 from ..extractors.registry import PARSERS
 from ..pdf.text import Document
 from .models import ExtractionResult, FailureCode
+from .wording import Detail, DetailCode
 
 
 class UnsupportedDocument(Exception):
-    """No known parser matched, or more than one did."""
+    """No known parser matched, or more than one did.
 
-    def __init__(self, code: FailureCode, reason: str) -> None:
-        super().__init__(reason)
+    ``detail`` carries the evidence: which markers were missing, or which
+    layouts matched. The sentence around it belongs to whoever shows it.
+    """
+
+    def __init__(self, code: FailureCode, detail: Detail) -> None:
+        super().__init__(str(detail))
         self.code = code
-        self.reason = reason
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -30,10 +35,6 @@ class Detection:
     parser: DanfeExtractor
     matched_parser_ids: tuple[str, ...]
     signatures: tuple[tuple[str, bool], ...] = ()
-
-
-#: Snapshot of the signatures of a layout, with the reason a document failed.
-_UNMATCHED_REASON = "Could not identify a supported DANFE layout"
 
 
 def detect(document: Document) -> Detection:
@@ -46,15 +47,19 @@ def detect(document: Document) -> Detection:
         parser = matches[0]
         return Detection(parser=parser, matched_parser_ids=(parser.parser_id,))
     if not matches:
-        missing = _missing_signature_summary(document)
         raise UnsupportedDocument(
             FailureCode.UNSUPPORTED_FORMAT,
-            f"{_UNMATCHED_REASON}{missing}",
+            Detail(
+                DetailCode.LAYOUT_MISSING,
+                {"signatures": _missing_signature_summary(document)},
+            ),
         )
     raise UnsupportedDocument(
         FailureCode.AMBIGUOUS_FORMAT,
-        "More than one DANFE layout matched: "
-        + ", ".join(parser.parser_id for parser in matches),
+        Detail(
+            DetailCode.LAYOUT_AMBIGUOUS,
+            {"parsers": ", ".join(parser.parser_id for parser in matches)},
+        ),
     )
 
 
@@ -65,7 +70,11 @@ def detect_and_extract(document: Document) -> ExtractionResult:
 
 
 def _missing_signature_summary(document: Document) -> str:
-    """List which markers of each known layout the document is missing."""
+    """List which markers of each known layout the document is missing.
+
+    The markers are a value, not a sentence: the frame that shows them says what
+    they mean (see :data:`app.core.wording.DETAILS`).
+    """
     details: list[str] = []
     for parser in PARSERS:
         missing = [
@@ -74,7 +83,5 @@ def _missing_signature_summary(document: Document) -> str:
             if not present
         ]
         if missing:
-            details.append(f"{parser.parser_id}: missing " + ", ".join(missing))
-    if not details:
-        return ""
-    return " (" + "; ".join(details) + ")"
+            details.append(f"{parser.parser_id}: " + ", ".join(missing))
+    return "; ".join(details)

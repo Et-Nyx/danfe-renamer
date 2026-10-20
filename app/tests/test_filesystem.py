@@ -15,7 +15,23 @@ from app.core.filesystem import (
     create_batch_directory,
     ensure_inside,
     path_key,
+    unused_path,
 )
+from app.core.wording import Detail, DetailCode
+
+
+def test_a_copy_with_no_agreed_name_is_numbered_instead_of_refused(tmp_path):
+    """Two inputs can carry the same name, and neither may be lost to the other."""
+    first = unused_path(tmp_path, "nota.pdf")
+    assert first == tmp_path / "nota.pdf"
+    first.write_bytes(b"%PDF-1.4 first")
+
+    second = unused_path(tmp_path, "nota.pdf")
+    assert second == tmp_path / "nota (2).pdf"
+    second.write_bytes(b"%PDF-1.4 second")
+
+    assert unused_path(tmp_path, "nota.pdf") == tmp_path / "nota (3).pdf"
+    assert first.read_bytes() == b"%PDF-1.4 first", "nothing was overwritten"
 
 
 def test_batch_directory_is_fresh_for_every_run(tmp_path):
@@ -171,7 +187,7 @@ def test_a_truncated_copy_is_refused_and_taken_away(tmp_path, monkeypatch):
         copy_into_batch(source, destination, batch_directory=batch)
 
     assert "not the whole file" in str(raised.value)
-    assert str(destination) in str(raised.value), "the failure names the file"
+    assert "10 bytes of 800" in str(raised.value), "the failure says what it got"
     assert list(batch.iterdir()) == []
 
 
@@ -182,13 +198,17 @@ def test_a_leftover_that_will_not_go_is_named_in_the_failure(tmp_path, monkeypat
     monkeypatch.setattr(
         app_filesystem,
         "discard_partial",
-        lambda path: f"{path} is still there and could not be removed",
+        lambda path: Detail(
+            DetailCode.LEFTOVER, {"path": str(path), "error": "held by a scanner"}
+        ),
     )
 
     with pytest.raises(OutputWriteError) as raised:
         copy_into_batch(source, destination, batch_directory=batch)
 
-    assert "still there and could not be removed" in str(raised.value)
+    assert raised.value.leftover is not None, "the caller has to be able to report it"
+    assert "still there and could not be removed" in raised.value.leftover.sentence()
+    assert str(destination) in raised.value.leftover.sentence()
 
 
 def test_an_existing_output_is_still_never_overwritten(tmp_path):

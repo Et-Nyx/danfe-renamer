@@ -28,6 +28,8 @@ from typing import Iterable, Sequence
 
 import pymupdf
 
+from ..core.wording import Detail, DetailCode
+
 #: Characters kept by :func:`normalize_text`. Everything else becomes a space.
 _KEEP_RE = re.compile(r"[^A-Za-z0-9]+")
 
@@ -64,12 +66,17 @@ class PdfReadError(Exception):
     """The document could not be opened or its text could not be read.
 
     ``code`` is the stable failure code reported for the file
-    (``PDF_READ_ERROR`` or ``PDF_ENCRYPTED``).
+    (``PDF_READ_ERROR`` or ``PDF_ENCRYPTED``); ``detail`` is the fact behind it,
+    which whoever shows the failure builds its sentence around. A failure the
+    code already explains carries no detail at all.
     """
 
-    def __init__(self, message: str, code: str = "PDF_READ_ERROR") -> None:
-        super().__init__(message)
+    def __init__(
+        self, detail: Detail | None = None, code: str = "PDF_READ_ERROR"
+    ) -> None:
+        super().__init__(str(detail) if detail is not None else code)
         self.code = code
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -238,13 +245,16 @@ def load_document(path: str | Path) -> Document:
     try:
         raw = pymupdf.open(pdf_path)
     except Exception as exc:  # pragma: no cover - library specific messages
-        raise PdfReadError(f"Could not open PDF: {exc}") from exc
+        raise PdfReadError(
+            Detail(DetailCode.PDF_OPEN_FAILED, {"error": str(exc)})
+        ) from exc
 
     try:
         if raw.needs_pass:
-            raise PdfReadError("PDF is password protected", code="PDF_ENCRYPTED")
+            # The code says it all: no PDF can be read without the password.
+            raise PdfReadError(code="PDF_ENCRYPTED")
         if raw.page_count == 0:
-            raise PdfReadError("PDF has no pages")
+            raise PdfReadError(Detail(DetailCode.PDF_NO_PAGES))
 
         metadata = {key: value for key, value in (raw.metadata or {}).items() if value}
         pages: list[Page] = []
@@ -256,7 +266,9 @@ def load_document(path: str | Path) -> Document:
     except PdfReadError:
         raise
     except Exception as exc:  # pragma: no cover - library specific messages
-        raise PdfReadError(f"Could not read PDF text: {exc}") from exc
+        raise PdfReadError(
+            Detail(DetailCode.PDF_READ_FAILED, {"error": str(exc)})
+        ) from exc
     finally:
         # Close and drop the library's objects here, in the thread that made
         # them; MuPDF is not thread-safe.

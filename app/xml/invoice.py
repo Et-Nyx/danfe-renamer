@@ -21,6 +21,7 @@ from defusedxml import ElementTree as SafeElementTree
 
 from ..core.models import ExtractedFields, ExtractionResult, FailureCode
 from ..core.normalize import format_br_date, format_br_money, parse_iso_date
+from ..core.wording import Detail, DetailCode
 from ..pdf.access_key import AccessKey, InvalidAccessKey
 
 NFE_MODEL = "55"
@@ -32,12 +33,12 @@ AUTHORIZED_STATUS = "100"
 
 
 class XmlInvoiceError(Exception):
-    """The XML cannot be used, with a stable failure code and a reason."""
+    """The XML cannot be used: a stable failure code, and the fact behind it."""
 
-    def __init__(self, code: FailureCode, reason: str) -> None:
-        super().__init__(reason)
+    def __init__(self, code: FailureCode, detail: Detail) -> None:
+        super().__init__(str(detail))
         self.code = code
-        self.reason = reason
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -84,14 +85,16 @@ def inspect_xml(path: str | Path) -> XmlInvoice:
         raw = xml_path.read_bytes()
     except OSError as exc:
         raise XmlInvoiceError(
-            FailureCode.XML_READ_ERROR, f"Could not read XML: {exc}"
+            FailureCode.XML_READ_ERROR,
+            Detail(DetailCode.XML_READ_FAILED, {"error": str(exc)}),
         ) from exc
 
     try:
         root = SafeElementTree.fromstring(raw)
     except Exception as exc:  # defusedxml raises several exception types
         raise XmlInvoiceError(
-            FailureCode.XML_READ_ERROR, f"Could not parse XML: {exc}"
+            FailureCode.XML_READ_ERROR,
+            Detail(DetailCode.XML_PARSE_FAILED, {"error": str(exc)}),
         ) from exc
 
     inf_nfe = _find_first(root, "infNFe")
@@ -111,7 +114,7 @@ def inspect_xml(path: str | Path) -> XmlInvoice:
     _check_issuer_cnpj(inf_nfe, access_key)
     authorized = _read_authorization(root, access_key, warnings)
     if _path_text(inf_nfe, "ide", "tpAmb") == "2":
-        warnings.append("Homologation XML (tpAmb=2); it has no fiscal value")
+        warnings.append(Detail(DetailCode.HOMOLOGATION))
 
     return XmlInvoice(
         path=xml_path,
@@ -137,36 +140,38 @@ def _read_access_key(root, inf_nfe) -> AccessKey:
         digits = ch_nfe or ""
     if not digits:
         raise XmlInvoiceError(
-            FailureCode.MISSING_ACCESS_KEY, "infNFe has no Id and no chNFe"
+            FailureCode.MISSING_ACCESS_KEY, Detail(DetailCode.XML_NO_KEY)
         )
     try:
         return AccessKey(digits)
     except InvalidAccessKey as exc:
-        raise XmlInvoiceError(FailureCode.INVALID_ACCESS_KEY, str(exc)) from exc
+        raise XmlInvoiceError(FailureCode.INVALID_ACCESS_KEY, exc.detail) from exc
 
 
-def _read_model(inf_nfe, access_key: AccessKey) -> tuple[str, list[str]]:
+def _read_model(inf_nfe, access_key: AccessKey) -> tuple[str, list[Detail]]:
     model = _path_text(inf_nfe, "ide", "mod") or access_key.model
     if model not in SUPPORTED_MODELS:
         raise XmlInvoiceError(
             FailureCode.XML_UNSUPPORTED,
-            f"document model {model!r} is not NF-e (55) or NFC-e (65)",
+            Detail(DetailCode.MODEL_UNSUPPORTED, {"model": str(model)}),
         )
     if model != access_key.model:
         raise XmlInvoiceError(
             FailureCode.INVALID_ACCESS_KEY,
-            f"model {model!r} disagrees with the access key model "
-            f"{access_key.model!r}",
+            Detail(
+                DetailCode.MODEL_DISAGREES,
+                {"model": str(model), "key_model": str(access_key.model)},
+            ),
         )
     return model, []
 
 
 def _read_nf_number(
-    inf_nfe, access_key: AccessKey, warnings: list[str]
+    inf_nfe, access_key: AccessKey, warnings: list[Detail]
 ) -> str | None:
     printed = _path_text(inf_nfe, "ide", "nNF")
     if printed is None:
-        warnings.append("NF number read from the access key; ide/nNF is missing")
+        warnings.append(Detail(DetailCode.NUMBER_FROM_KEY))
         return access_key.nf_number or None
     return printed.lstrip("0") or "0"
 
@@ -197,35 +202,40 @@ def _check_issuer_cnpj(inf_nfe, access_key: AccessKey) -> None:
     if digits and digits != access_key.issuer_cnpj:
         raise XmlInvoiceError(
             FailureCode.INVALID_ACCESS_KEY,
-            f"issuer CNPJ {digits} disagrees with the access key "
-            f"{access_key.issuer_cnpj}",
+            Detail(
+                DetailCode.CNPJ_DISAGREES,
+                {"cnpj": digits, "key_cnpj": access_key.issuer_cnpj},
+            ),
         )
 
 
-def _read_authorization(root, access_key: AccessKey, warnings: list[str]) -> bool:
+def _read_authorization(root, access_key: AccessKey, warnings: list[Detail]) -> bool:
     protocol = _find_first(root, "infProt")
     if protocol is None:
-        warnings.append(
-            "XML has no authorization protocol; the data was read from the NFe"
-        )
+        warnings.append(Detail(DetailCode.NO_PROTOCOL))
         return False
 
     status = _path_text(protocol, "cStat")
     if status is None:
-        warnings.append("XML protocol has no cStat; authorization is unconfirmed")
+        warnings.append(Detail(DetailCode.PROTOCOL_WITHOUT_CSTAT))
         return False
     if status != AUTHORIZED_STATUS:
-        reason = _path_text(protocol, "xMotivo") or "no reason given"
+        reason = _path_text(protocol, "xMotivo")
         raise XmlInvoiceError(
             FailureCode.XML_NOT_AUTHORIZED,
-            f"authorization status {status}: {reason}",
+            Detail(
+                DetailCode.NOT_AUTHORIZED if reason else DetailCode.NOT_AUTHORIZED_SILENT,
+                {"status": status, "reason": reason}
+                if reason
+                else {"status": status},
+            ),
         )
 
     protocol_key = _path_text(protocol, "chNFe")
     if protocol_key and protocol_key != access_key.digits:
         raise XmlInvoiceError(
             FailureCode.INVALID_ACCESS_KEY,
-            "the protocol key disagrees with the infNFe key",
+            Detail(DetailCode.PROTOCOL_KEY_DISAGREES),
         )
     return True
 
@@ -234,17 +244,15 @@ def _unsupported_root(root) -> XmlInvoiceError:
     root_name = _local_name(root.tag)
     if root_name == "resNFe":
         return XmlInvoiceError(
-            FailureCode.XML_UNSUPPORTED,
-            "this is an NF-e summary (resNFe), not an authorized invoice",
+            FailureCode.XML_UNSUPPORTED, Detail(DetailCode.XML_SUMMARY)
         )
     if root_name in {"evento", "procEventoNFe"}:
         return XmlInvoiceError(
-            FailureCode.XML_UNSUPPORTED,
-            "this is an NF-e event, not an invoice",
+            FailureCode.XML_UNSUPPORTED, Detail(DetailCode.XML_EVENT)
         )
     return XmlInvoiceError(
         FailureCode.XML_UNSUPPORTED,
-        f"not an NF-e/NFC-e XML (root element: {root_name})",
+        Detail(DetailCode.XML_NOT_INVOICE, {"root": root_name}),
     )
 
 

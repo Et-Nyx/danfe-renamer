@@ -15,7 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from app.core.models import FailureCode, InputKind, NameSource, Status
+from app.core.models import FailureCode, FileOutcome, InputKind, NameSource, Status
+from app.core.wording import Detail, DetailCode
 from app.gui import app_window, settings as settings_module
 from app.gui.app_window import split_dropped_paths
 from app.gui.i18n import (
@@ -26,7 +27,7 @@ from app.gui.i18n import (
     summarise,
 )
 
-from .fixtures.danfe_builder import write_danfe
+from .fixtures.danfe_builder import write_danfe, write_nfe_xml
 
 
 def test_every_string_exists_in_every_language():
@@ -95,7 +96,6 @@ def test_summary_text_is_in_the_selected_language():
                 source_path=None,  # type: ignore[arg-type]
                 status=Status.SKIPPED,
                 failure_code=FailureCode.TOTAL_VALUE_NOT_FOUND,
-                reason="VALOR TOTAL DA NOTA not found",
             ),
         ],
     )
@@ -133,12 +133,12 @@ def summary_of(total: int, *, errors: int = 0, skipped: int = 0, seconds: float 
     ]
     outcomes += [
         FileOutcome(source_path=Path(f"e{i}.xml"), status=Status.ERROR,
-                    failure_code=FailureCode.OUTPUT_WRITE_ERROR, reason="could not copy")
+                    failure_code=FailureCode.OUTPUT_WRITE_ERROR)
         for i in range(errors)
     ]
     outcomes += [
         FileOutcome(source_path=Path(f"s{i}.xml"), status=Status.SKIPPED,
-                    failure_code=FailureCode.TOTAL_VALUE_NOT_FOUND, reason="no total")
+                    failure_code=FailureCode.TOTAL_VALUE_NOT_FOUND)
         for i in range(skipped)
     ]
     return BatchSummary(
@@ -312,6 +312,76 @@ def test_window_processes_a_batch_end_to_end(window, tmp_path):
     window.root.update()
     assert window.details_window is not None
     window._close_details()
+
+
+def test_window_converts_xmls_in_the_mode_it_opens_in(window, tmp_path):
+    """XML is the main workflow: the window reads it without being switched to."""
+    source = tmp_path / "in" / "nota.xml"
+    write_nfe_xml(source, nf_number="1234")
+    window._add_sources([source])
+    assert len(window.selected) == 1, "no input-kind button was touched"
+
+    run_window_batch(window)
+
+    assert window.input_kind is InputKind.XML
+    assert window.summary.succeeded == 1
+    assert window.summary.converted == 1
+    expected = (
+        window.summary.output_directory
+        / "16.09.2026_NF 1234 - INDUSTRIA EXEMPLO LTDA - 1.234,56.pdf"
+    )
+    assert expected.exists()
+    assert source.exists(), "the original XML must still be there"
+
+
+def test_the_window_hands_over_the_pdf_of_a_note_it_could_not_name(window, tmp_path):
+    """The whole point of the filter: a failure with a document behind it."""
+    from app.gui.app_window import DetailsFilter
+
+    source = tmp_path / "in" / "sem-destinatario.xml"
+    write_nfe_xml(source, nf_number="1234", recipient="")
+    window.name_source_buttons[NameSource.RECIPIENT].invoke()
+    window._add_sources([source])
+
+    run_window_batch(window)
+
+    outcome = window.summary.outcomes[0]
+    kept = window.summary.output_directory / "_unrenamed" / "sem-destinatario.pdf"
+    assert outcome.status is Status.SKIPPED
+    assert outcome.destination_path == kept
+    assert kept.exists()
+
+    window.show_details()
+    window.root.update()
+    window.filter_buttons[DetailsFilter.FAILED].invoke()
+    window.details_table.selection_set(window.details_table.get_children())
+    window.root.update()
+
+    assert window.filter_count_label.cget("text") == "1 of 1 files"
+    assert window.open_copy_button.cget("text") == "Open PDF (not renamed)"
+    assert "disabled" not in window.open_copy_button.state()
+    window._close_details()
+
+
+def test_a_folder_added_again_does_not_bring_the_copies_back(window, tmp_path):
+    """The batch folder lives inside the input folder; it is not an input.
+
+    Adding the same folder twice used to select the PDFs the previous run had
+    just written, so a second batch copied the first one's output.
+    """
+    folder = tmp_path / "notas"
+    source = folder / "nota.pdf"
+    write_danfe(source)
+    window.input_kind_buttons[InputKind.PDF].invoke()
+    window._add_sources([folder])
+    run_window_batch(window)
+    copy = window.summary.outcomes[0].destination_path
+    assert copy.exists()
+
+    window.clear_list()
+    window._add_sources([folder])
+
+    assert window.selected == [source], "the run's own output is not an input"
 
 
 def test_window_reports_why_a_file_was_skipped(window, tmp_path):
@@ -717,6 +787,50 @@ def test_the_details_actions_speak_the_chosen_language(window, tmp_path):
     assert window.close_button.cget("text") == "Fechar"
 
 
+def test_the_copy_button_says_which_file_it_will_open(window, tmp_path):
+    """A PDF that never got its name is not offered as a renamed copy.
+
+    A file the batch could not name still has a PDF, and the button that opens
+    it must not promise a name that is not on it.
+    """
+    from app.core.models import BatchSummary, FileOutcome
+
+    renamed = FileOutcome(
+        source_path=tmp_path / "nota.pdf",
+        status=Status.SUCCESS,
+        target_filename="16.09.2026_NF 1234 - X - 1.234,56.pdf",
+        destination_path=tmp_path / "16.09.2026_NF 1234 - X - 1.234,56.pdf",
+    )
+    unnamed = FileOutcome(
+        source_path=tmp_path / "sem-destinatario.xml",
+        status=Status.SKIPPED,
+        failure_code=FailureCode.RECIPIENT_NOT_FOUND,
+        destination_path=tmp_path / "_unrenamed" / "sem-destinatario.pdf",
+        unnamed=True,
+    )
+    for outcome in (renamed, unnamed):
+        outcome.destination_path.parent.mkdir(parents=True, exist_ok=True)
+        outcome.destination_path.write_bytes(b"%PDF-1.4")
+    window.summary = BatchSummary(
+        started_at=datetime(2026, 10, 20, 11, 0, 0),
+        finished_at=datetime(2026, 10, 20, 11, 0, 1),
+        outcomes=[renamed, unnamed],
+    )
+
+    open_details(window, ["0"])
+    assert window.open_copy_button.cget("text") == "Open renamed copy"
+
+    open_details(window, ["1"])
+    assert window.open_copy_button.cget("text") == "Open PDF (not renamed)"
+    assert "disabled" not in window.open_copy_button.state(), "the PDF is there"
+    assert window.details_menu.entrycget(1, "label") == "Open PDF (not renamed)", (
+        "the menu offers the same action, so it says the same thing"
+    )
+
+    open_details(window, ["0"])
+    assert window.details_menu.entrycget(1, "label") == "Open renamed copy"
+
+
 def test_the_context_menu_offers_what_the_buttons_do(window, tmp_path):
     """Right-clicking a row is the shortest way to the same actions."""
     failing_batch(window, tmp_path, ["broken.pdf"])
@@ -790,9 +904,14 @@ def test_the_pane_says_why_the_write_failed(window, tmp_path):
                 parser_id="nfe_xml",
                 source_type="xml",
                 issuer="TEMP CLEAN NORDESTE PRODUTOS DE HIGIENE E SANITIZACAO LTDA",
-                reason="could not copy to C:/out/12333.pdf: [WinError 32] The process "
-                       "cannot access the file because it is being used by another "
-                       "process",
+                detail=Detail(
+                    DetailCode.COPY_FAILED,
+                    {
+                        "destination": "C:/out/12333.pdf",
+                        "error": "[WinError 32] The process cannot access the file "
+                        "because it is being used by another process",
+                    },
+                ),
             )
         ],
     )
@@ -804,27 +923,209 @@ def test_the_pane_says_why_the_write_failed(window, tmp_path):
     assert "being used by another process" in shown
 
 
-def test_the_cause_does_not_repeat_the_catalogue_sentence():
-    """``reason`` is either the catalogue, the catalogue plus detail, or detail."""
-    from app.core.models import FileOutcome
+def test_the_cause_is_built_in_the_readers_language():
+    """The layer records a fact; the pane and the reports make it words."""
+    outcome = FileOutcome(
+        source_path=Path("x.pdf"),
+        status=Status.ERROR,
+        failure_code=FailureCode.OUTPUT_WRITE_ERROR,
+        detail=Detail(
+            DetailCode.COPY_FAILED,
+            {"destination": "C:/out/x.pdf", "error": "[WinError 32] held"},
+        ),
+    )
 
-    def cause(reason):
-        return app_window.outcome_cause(
-            FileOutcome(source_path=Path("x.pdf"), status=Status.ERROR,
-                        failure_code=FailureCode.NF_NUMBER_CONFLICT, reason=reason)
+    assert app_window.outcome_cause(outcome, "en") == (
+        "Could not copy to C:/out/x.pdf: [WinError 32] held"
+    )
+    assert app_window.outcome_cause(outcome, "pt") == (
+        "Não foi possível copiar para C:/out/x.pdf: [WinError 32] held"
+    )
+    assert app_window.outcome_cause(outcome, "pt").endswith("[WinError 32] held"), (
+        "what Windows said is not translated"
+    )
+    assert (
+        app_window.outcome_cause(
+            FileOutcome(source_path=Path("x.pdf"), status=Status.SKIPPED), "en"
         )
+        == ""
+    ), "a failure the code already explains has no cause of its own"
 
-    catalogue = "Printed NF number disagrees with the access key"
-    assert cause(f"{catalogue} (printed 1234, access key 1235)") == "(printed 1234, access key 1235)"
-    assert cause(catalogue) == "", "nothing to add"
-    assert cause("could not copy to C:/out/x.pdf: disk full") == "could not copy to C:/out/x.pdf: disk full"
-    assert cause(None) == ""
+
+# --------------------------------------------------- narrowing the details list
+#
+# A batch is read for two reasons: to find the files that need attention and to
+# confirm the ones that went through. One list serves both badly once a run is
+# long, so it can be narrowed - and it says how much of the batch it is showing,
+# because a list that is quietly shorter reads as files that went missing.
+
+
+def mixed_batch(window, tmp_path):
+    """A batch with one file that was renamed and one that was not."""
+    good = tmp_path / "in" / "nota.pdf"
+    write_danfe(good)
+    broken = tmp_path / "in" / "broken.pdf"
+    broken.write_bytes(b"not a pdf")
+    window.input_kind_buttons[InputKind.PDF].invoke()
+    window._add_sources([broken, good])
+    run_window_batch(window)
+    assert window.summary.succeeded == 1
+    assert window.summary.skipped + window.summary.errors == 1
+
+
+def shown_rows(window) -> list[str]:
+    """The file names the list is showing, in the order it shows them."""
+    table = window.details_table
+    return [table.item(row, "text") for row in table.get_children()]
+
+
+def choose_filter(window, choice) -> None:
+    """Click one of the filter's radio buttons, the way a person does."""
+    window.filter_buttons[choice].invoke()
+    window.root.update()
+
+
+def test_the_details_list_starts_showing_every_file(window, tmp_path):
+    mixed_batch(window, tmp_path)
+    window.show_details()
+    window.root.update()
+
+    assert [button.cget("text") for button in window.filter_buttons.values()] == [
+        "All files",
+        "Only failures",
+        "Only successes",
+    ]
+    assert window.details_filter is app_window.DetailsFilter.ALL
+    assert shown_rows(window) == ["broken.pdf", "nota.pdf"]
+
+
+def test_only_failures_shows_the_files_that_were_not_renamed(window, tmp_path):
+    mixed_batch(window, tmp_path)
+    open_details(window, [])
+
+    choose_filter(window, app_window.DetailsFilter.FAILED)
+
+    assert shown_rows(window) == ["broken.pdf"], "a skipped file is one to act on too"
+
+
+def test_only_successes_shows_the_files_that_were_renamed(window, tmp_path):
+    mixed_batch(window, tmp_path)
+    open_details(window, [])
+
+    choose_filter(window, app_window.DetailsFilter.SUCCESSFUL)
+
+    assert shown_rows(window) == ["nota.pdf"]
+
+
+def test_a_narrowed_row_still_points_at_its_own_file(window, tmp_path, monkeypatch):
+    """The filter decides what is listed, not what a row stands for."""
+    opened = []
+    monkeypatch.setattr(app_window, "open_path", opened.append)
+    mixed_batch(window, tmp_path)
+    open_details(window, [])
+    choose_filter(window, app_window.DetailsFilter.SUCCESSFUL)
+
+    window.details_table.selection_set(window.details_table.get_children())
+    window.root.update()
+    window.open_selected_file()
+
+    renamed = next(outcome for outcome in window.summary.outcomes if outcome.succeeded)
+    assert opened == [renamed.source_path]
+
+
+def test_the_list_says_how_much_of_the_batch_it_is_showing(window, tmp_path):
+    mixed_batch(window, tmp_path)
+    open_details(window, [])
+
+    assert window.filter_count_label.cget("text") == "2 of 2 files"
+
+    choose_filter(window, app_window.DetailsFilter.FAILED)
+
+    assert window.filter_count_label.cget("text") == "1 of 2 files"
+
+
+def test_the_filter_and_its_count_speak_the_chosen_language(window, tmp_path):
+    mixed_batch(window, tmp_path)
+    open_details(window, [])
+
+    window.translate.set_language("pt")
+    window.root.update()
+
+    assert window.filter_label.cget("text") == "Mostrar"
+    assert [button.cget("text") for button in window.filter_buttons.values()] == [
+        "Todos os arquivos",
+        "Somente falhas",
+        "Somente sucessos",
+    ]
+    assert window.filter_count_label.cget("text") == "2 de 2 arquivos"
+
+
+def test_the_chosen_filter_survives_a_language_change(window, tmp_path):
+    """A language change rebuilds the window that shows the filter."""
+    mixed_batch(window, tmp_path)
+    open_details(window, [])
+    choose_filter(window, app_window.DetailsFilter.FAILED)
+
+    window.translate.set_language("pt")
+    window.root.update()
+
+    assert shown_rows(window) == ["broken.pdf"], "the same rows, in the other language"
+    assert window.filter_count_label.cget("text") == "1 de 2 arquivos"
+
+
+def test_the_filter_row_is_laid_out_before_the_list(window, tmp_path):
+    """Tk squeezes whatever it packs last, and this row has no give in it."""
+    mixed_batch(window, tmp_path)
+    window.show_details()
+    window.root.update()
+
+    slaves = window.details_window.pack_slaves()
+    assert slaves[0] is window.filter_label.master, "the filter is allocated first"
+    assert window.details_table in slaves
+
+
+def test_processing_another_batch_does_not_leave_the_old_list_open(window, tmp_path):
+    """The list describes the batch that just went away, so it goes with it."""
+    mixed_batch(window, tmp_path)
+    window.show_details()
+    window.root.update()
+
+    window.reset_for_next_batch()
+    window.root.update()
+
+    assert window.details_table is None
+    assert window.details_window is None
+    assert window.details_filter is app_window.DetailsFilter.ALL, "a new batch opens whole"
+
+
+def test_a_skipped_file_is_a_failure_of_the_batch():
+    """Both filters are about the batch's two halves, not about three statuses."""
+    skipped = FileOutcome(source_path=Path("b.pdf"), status=Status.SKIPPED)
+    errored = FileOutcome(source_path=Path("c.pdf"), status=Status.ERROR)
+    renamed = FileOutcome(source_path=Path("a.pdf"), status=Status.SUCCESS)
+    keeps = app_window.keeps_row
+
+    assert all(
+        keeps(outcome, app_window.DetailsFilter.ALL)
+        for outcome in (renamed, skipped, errored)
+    )
+    assert [
+        keeps(outcome, app_window.DetailsFilter.FAILED)
+        for outcome in (renamed, skipped, errored)
+    ] == [False, True, True]
+    assert [
+        keeps(outcome, app_window.DetailsFilter.SUCCESSFUL)
+        for outcome in (renamed, skipped, errored)
+    ] == [True, False, False]
 
 
 def test_revealing_names_the_file_for_the_file_manager(monkeypatch, tmp_path):
-    """Explorer takes the switch and the path as one argument.
+    """Explorer parses its own command line, and wants the quotes around the path.
 
-    Splitting them loses a path that contains spaces, which is most of them.
+    Handed a list, ``subprocess`` quotes the switch and the path together -
+    ``"/select,C:\\a b\\c.pdf"`` - and Explorer answers that by opening its
+    default folder instead. Only a path containing a space shows it, which is
+    why a batch read from a folder like ``Notas fiscais`` opened Documentos.
     """
     launched = []
     monkeypatch.setattr(app_window.subprocess, "Popen", launched.append)
@@ -834,7 +1135,7 @@ def test_revealing_names_the_file_for_the_file_manager(monkeypatch, tmp_path):
 
     app_window.reveal_path(target)
 
-    assert launched == [["explorer", f"/select,{target}"]]
+    assert launched == [f'explorer /select,"{target}"']
 
 
 def test_revealing_a_file_that_left_opens_its_folder(monkeypatch, tmp_path):
@@ -842,10 +1143,49 @@ def test_revealing_a_file_that_left_opens_its_folder(monkeypatch, tmp_path):
     launched = []
     monkeypatch.setattr(app_window.subprocess, "Popen", launched.append)
     monkeypatch.setattr(app_window.sys, "platform", "win32")
+    folder = tmp_path / "Notas fiscais"
 
-    app_window.reveal_path(tmp_path / "gone.pdf")
+    app_window.reveal_path(folder / "gone.pdf")
 
-    assert launched == [["explorer", str(tmp_path)]]
+    assert launched == [f'explorer "{folder}"']
+
+
+def test_a_relative_path_is_made_the_file_it_means(monkeypatch, tmp_path):
+    """Explorer is given an absolute path; a relative one names its own folder."""
+    launched = []
+    monkeypatch.setattr(app_window.subprocess, "Popen", launched.append)
+    monkeypatch.setattr(app_window.sys, "platform", "win32")
+    folder = tmp_path / "Notas fiscais"
+    folder.mkdir()
+    (folder / "nota.xml").write_bytes(b"<x/>")
+    monkeypatch.chdir(folder)
+
+    app_window.reveal_path(Path("nota.xml"))
+
+    assert launched == [f'explorer /select,"{folder / "nota.xml"}"']
+
+
+def test_a_path_needs_quotes_only_when_it_contains_a_space():
+    """The quotes go around the path, and a path Explorer reads as one word has none.
+
+    A drive root is the one path ``abspath`` leaves a trailing separator on, and
+    a backslash before the closing quote would escape it - so it is never
+    quoted. The paths here are absolute and made up, so the rule is the only
+    thing the answer depends on.
+    """
+    command = app_window.explorer_command
+
+    assert command(Path("C:/notas/nota.xml"), select=True) == (
+        "explorer /select,C:\\notas\\nota.xml"
+    )
+    assert command(Path("C:/notas/nota.xml"), select=False) == (
+        "explorer C:\\notas\\nota.xml"
+    )
+    assert command(Path("C:/notas fiscais/nota.xml"), select=True) == (
+        'explorer /select,"C:\\notas fiscais\\nota.xml"'
+    )
+    assert command(Path("C:/"), select=False) == "explorer C:\\"
+    assert command(Path("C:/"), select=True) == "explorer /select,C:\\"
 
 
 def test_opening_hands_the_file_to_the_desktop(monkeypatch, tmp_path):

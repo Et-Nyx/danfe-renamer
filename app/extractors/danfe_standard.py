@@ -27,6 +27,7 @@ from ..core.normalize import (
     normalize_money,
     parse_br_date,
 )
+from ..core.wording import Detail, DetailCode
 from ..pdf.access_key import find_key_occurrences
 from ..pdf.text import Document, Word, normalize_tokens
 from .anchor import find_anchors, find_line_below, find_value_near, frame_of
@@ -73,15 +74,14 @@ _NF_MARKERS = frozenset({"N", "NO", "NF", "NRO", "NUMERO"})
 
 #: How far below a label its value may sit.
 #:
-#: A DANFE prints a label and its value in the same cell, so the value sits right
-#: under the label: measured gaps in production are 0.3pt (grid layouts) to
-#: 7.4pt (the ERP variant), which is under one printed row. Staying inside the
-#: cell is what keeps the parser from grabbing a number from the next block: an
-#: empty cell must become a reported failure, never a guess.
-MAX_VALUE_DISTANCE = 12.0
+#: A DANFE prints a label and its value in the same cell, so the value is right
+#: under the label (measured gaps in production are under 8pt). Staying tight is
+#: what keeps the parser from grabbing a number from a neighbouring or later
+#: row: an empty cell must become a reported failure, never a guess.
+MAX_VALUE_DISTANCE = 20.0
 
-#: How far to the side of a label its value may start, because a value cell can
-#: be a little wider than the label printed above it.
+#: How far to the side of the label a value may start (value cells can be wider
+#: than the label that sits above them).
 MAX_VALUE_SIDE_OFFSET = 25.0
 
 
@@ -119,40 +119,14 @@ class _Read:
     """Outcome of reading one field: the printed text, notes and any blocker."""
 
     value: str | None = None
-    issues: list[str] = field(default_factory=list)
+    issues: list[Detail] = field(default_factory=list)
     blocked: FailureCode | None = None
-    blocked_detail: str | None = None
+    blocked_detail: Detail | None = None
 
-    def block(self, code: FailureCode, detail: str) -> None:
+    def block(self, code: FailureCode, detail: Detail) -> None:
         if self.blocked is None:
             self.blocked = code
             self.blocked_detail = detail
-
-
-#: How far below a label its value may sit.
-#:
-#: A DANFE prints a label and its value in the same cell, so the value is right
-#: under the label (measured gaps in production are under 8pt). Staying tight is
-#: what keeps the parser from grabbing a number from a neighbouring or later
-#: row: an empty cell must become a reported failure, never a guess.
-MAX_VALUE_DISTANCE = 20.0
-
-#: How far to the side of the label a value may start (value cells can be wider
-#: than the label that sits above them).
-MAX_VALUE_SIDE_OFFSET = 25.0
-
-
-#: How far below a label its value may sit.
-#:
-#: A DANFE prints a label and its value in the same cell, so the value is right
-#: under the label (measured gaps in production are under 8pt). Staying tight is
-#: what keeps the parser from grabbing a number from a neighbouring or later
-#: row: an empty cell must become a reported failure, never a guess.
-MAX_VALUE_DISTANCE = 20.0
-
-#: How far to the side of the label a value may start (value cells can be wider
-#: than the label that sits above them).
-MAX_VALUE_SIDE_OFFSET = 25.0
 
 
 class DanfeStandardExtractor(DanfeExtractor):
@@ -236,7 +210,7 @@ def _read_access_key(document: Document) -> _Read:
     read = _Read()
     occurrences = find_key_occurrences(document)
     if not occurrences:
-        read.block(FailureCode.MISSING_ACCESS_KEY, "no 44-digit key found")
+        read.block(FailureCode.MISSING_ACCESS_KEY, Detail(DetailCode.KEY_NOT_FOUND))
         return read
 
     anchors = find_anchors(document, _KEY_LABELS)
@@ -247,10 +221,14 @@ def _read_access_key(document: Document) -> _Read:
     distinct = list(dict.fromkeys(occurrence.digits for occurrence in ranked))
 
     if len(distinct) > 1:
-        where = "next to the key label" if anchored else "anywhere in the document"
+        code = (
+            DetailCode.KEY_AMBIGUOUS_ANCHORED
+            if anchored
+            else DetailCode.KEY_AMBIGUOUS_ANYWHERE
+        )
         read.block(
             FailureCode.ACCESS_KEY_AMBIGUOUS,
-            f"multiple keys found {where}: " + ", ".join(distinct),
+            Detail(code, {"keys": ", ".join(distinct)}),
         )
         return read
 
@@ -263,9 +241,9 @@ def _read_access_key(document: Document) -> _Read:
         )
     )
     if extras:
-        read.issues.append("Referenced note keys present: " + ", ".join(extras))
+        read.issues.append(Detail(DetailCode.REFERENCED_KEYS, {"keys": ", ".join(extras)}))
     if not anchored:
-        read.issues.append("Access key is not printed next to a CHAVE DE ACESSO label")
+        read.issues.append(Detail(DetailCode.KEY_WITHOUT_LABEL))
     return read
 
 
@@ -301,8 +279,10 @@ def _read_printed_nf_number(document: Document) -> _Read:
         candidates = marked
     elif candidates:
         read.issues.append(
-            "Printed NF number candidates found without a Nº label: "
-            + ", ".join(word.text for word in candidates)
+            Detail(
+                DetailCode.NUMBER_WITHOUT_LABEL,
+                {"numbers": ", ".join(word.text for word in candidates)},
+            )
         )
 
     numbers = {
@@ -350,7 +330,7 @@ def _read_emission_date(document: Document) -> _Read:
         if parse_br_date(word.text) is None:
             read.block(
                 FailureCode.EMISSION_DATE_NOT_FOUND,
-                f"impossible date {word.text.strip()!r}",
+                Detail(DetailCode.DATE_IMPOSSIBLE, {"printed": word.text.strip()}),
             )
             continue
         values.append(word.text.strip())
@@ -361,8 +341,7 @@ def _read_emission_date(document: Document) -> _Read:
     if len(distinct) > 1:
         read.block(
             FailureCode.EMISSION_DATE_CONFLICT,
-            "emission date printed differently in the document: "
-            + ", ".join(distinct),
+            Detail(DetailCode.DATE_CONFLICT, {"values": ", ".join(distinct)}),
         )
         return read
     read.value = distinct[0]
@@ -379,8 +358,7 @@ def _read_total_value(document: Document) -> _Read:
     if len(distinct) > 1:
         read.block(
             FailureCode.TOTAL_VALUE_AMBIGUOUS,
-            "VALOR TOTAL DA NOTA printed with different values: "
-            + ", ".join(distinct),
+            Detail(DetailCode.TOTAL_CONFLICT, {"values": ", ".join(distinct)}),
         )
         return read
     read.value = distinct[0]
@@ -429,15 +407,17 @@ def _read_issuer(document: Document) -> _Read:
     if block_name is None:
         if phrase_name is None:
             return read
-        read.issues.append("Issuer read from the receipt phrase, not the emitente block")
+        read.issues.append(Detail(DetailCode.ISSUER_FROM_RECEIPT))
         read.value = phrase_name
         return read
 
     read.value = block_name
     if phrase_name is not None and _letter_key(phrase_name) != _letter_key(block_name):
         read.issues.append(
-            "Issuer differs between emitente block and receipt phrase: "
-            f"{block_name!r} vs {phrase_name!r}"
+            Detail(
+                DetailCode.ISSUER_DIFFERS,
+                {"block": block_name, "phrase": phrase_name},
+            )
         )
     return read
 
