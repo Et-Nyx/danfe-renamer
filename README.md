@@ -102,8 +102,14 @@ one run is reported as a collision instead.
 ```bash
 py -3.12 -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements-dev.txt
-.venv/Scripts/python.exe -m pytest      # 148 tests, no confidential data needed
+.venv/Scripts/python.exe -m pytest      # 166 tests, no confidential data needed
 ```
+
+If every Python command on the machine dies with an import error from an old
+`python-future` tree (`This package should not be accessible on Python 3`), a
+stray `PYTHONPATH` is pointing at it: run the commands above with `PYTHONPATH=`
+cleared, and build the environment with whatever interpreter the machine already
+has - `PYTHONPATH=/path/to/python.exe -m venv .venv` works the same.
 
 Tests build their own DANFE-like PDFs with PyMuPDF and their own NF-e/NFC-e XMLs
 with the standard library (`app/tests/fixtures/danfe_builder.py`): real invoices
