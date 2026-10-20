@@ -12,6 +12,7 @@ does not, so the window always opens and the buttons always work.
 
 from __future__ import annotations
 
+import os
 import queue
 import subprocess
 import sys
@@ -111,6 +112,33 @@ def require_tkdnd(root: tk.Tk) -> bool:
         return False
 
 
+def open_path(path: Path) -> None:
+    """Open a file or folder in whatever this desktop uses for that kind."""
+    if sys.platform.startswith("win"):
+        os.startfile(path)  # type: ignore[attr-defined]
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+    else:
+        subprocess.Popen(["xdg-open", str(path)])
+
+
+def reveal_path(path: Path) -> None:
+    """Show a path in the desktop's file manager, with the file selected.
+
+    A file that is gone still has a folder worth opening, so the folder is what
+    gets shown then. Explorer takes the switch and the path as one argument:
+    splitting them loses a path that contains spaces.
+    """
+    folder = path if path.is_dir() else path.parent
+    if sys.platform.startswith("win"):
+        target = f"/select,{path}" if path.exists() else str(folder)
+        subprocess.Popen(["explorer", target])
+    elif sys.platform == "darwin" and path.exists():
+        subprocess.Popen(["open", "-R", str(path)])
+    else:
+        subprocess.Popen(["xdg-open", str(folder)])
+
+
 def build_window() -> "RenamerWindow":
     """Create the main window, with drag-and-drop when this machine supports it."""
     root = create_root()
@@ -127,9 +155,12 @@ class RenamerWindow:
         self.input_kind_var = tk.StringVar(value=load_input_kind().value)
         self.selected: list[Path] = []
         self.summary: BatchSummary | None = None
+        # The details widgets below are built by show_details and cleared by
+        # _close_details: whenever details_table is set, they are all set.
         self.details_window: tk.Toplevel | None = None
         self.details_table: ttk.Treeview | None = None
-        self.detail_label: ttk.Label | None = None
+        self.detail_text: tk.Text | None = None
+        self.details_menu: tk.Menu | None = None
         self._events: queue.Queue = queue.Queue()
         self._running = False
 
@@ -548,25 +579,16 @@ class RenamerWindow:
     def open_output_folder(self) -> None:
         if self.summary is None or self.summary.output_directory is None:
             return
-        directory = Path(self.summary.output_directory)
-        try:
-            if sys.platform.startswith("win"):
-                import os
-
-                os.startfile(directory)  # type: ignore[attr-defined]
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(directory)])
-            else:
-                subprocess.Popen(["xdg-open", str(directory)])
-        except OSError as exc:
-            messagebox.showerror(
-                self.translate("error_title"),
-                self.translate("report_open_failed", error=exc),
-            )
+        self._hand_to_desktop(Path(self.summary.output_directory), reveal=False)
 
     # --------------------------------------------------------------- details
 
     def show_details(self) -> None:
+        """Open the per-file list, where a failure can be acted on.
+
+        This is not a report to read: a file that failed has to be reachable -
+        opened, found in its folder, its name copied into a message.
+        """
         if self.summary is None:
             return
         if self.details_window is not None and self.details_window.winfo_exists():
@@ -577,21 +599,26 @@ class RenamerWindow:
         window = tk.Toplevel(self.root)
         self.details_window = window
         window.title(t("details_title"))
-        window.geometry("900x520")
+        window.geometry("900x600")
+        window.minsize(720, 460)
         window.transient(self.root)
 
         table = ttk.Treeview(
-            window, columns=("status", "target", "reason"), show="headings"
+            window,
+            columns=("status", "target", "reason"),
+            show="headings",
+            selectmode="extended",
+            height=8,
         )
         self.details_table = table
         table.heading("#0", text=t("column_source"))
         table.heading("status", text=t("column_status"))
         table.heading("target", text=t("column_target"))
         table.heading("reason", text=t("column_reason"))
-        table.column("#0", width=280)
+        table.column("#0", width=260)
         table.column("status", width=90, anchor="center")
-        table.column("target", width=300)
-        table.column("reason", width=220)
+        table.column("target", width=250)
+        table.column("reason", width=280)
         table.pack(fill="both", expand=True, side="top")
 
         status_names = {
@@ -615,53 +642,287 @@ class RenamerWindow:
                 ),
             )
 
-        detail_box = ttk.LabelFrame(window, padding=10)
-        detail_box.pack(fill="both", expand=False, side="bottom")
-        detail_label = ttk.Label(detail_box, justify="left", anchor="w")
-        self.detail_label = detail_label
-        detail_label.pack(fill="both")
-        detail_label.configure(text=t("select_row_hint"))
+        self._build_details_actions(window)
 
-        def describe(outcome: FileOutcome) -> str:
-            rows = [
-                f"{t('field_parser')}: {outcome.parser_id or '-'}",
-                f"{t('field_source_type')}: {outcome.source_type or '-'}",
-                f"{t('field_model')}: {outcome.document_model or '-'}",
-                f"{t('field_generated')}: "
-                f"{t('yes') if outcome.generated else t('no')}",
-                f"{t('field_access_key')}: {outcome.access_key or '-'}",
-                f"{t('field_nf_number')}: {outcome.nf_number or '-'}",
-                f"{t('field_date')}: {outcome.emission_date or '-'}",
-                f"{t('field_value')}: {outcome.total_value or '-'}",
-                f"{t('name_source_label')}: {describe_name_source(outcome.name_source, t)}",
-                f"{t('field_issuer')}: {outcome.issuer or '-'}",
-                f"{t('field_recipient')}: {outcome.recipient or '-'}",
-                f"{t('field_destination')}: {outcome.destination_path or '-'}",
-                f"{t('field_duration')}: {t('seconds', value=outcome.duration_seconds)}",
-            ]
-            if outcome.warnings:
-                rows.append(t("field_warnings") + ": " + "; ".join(outcome.warnings))
-            if outcome.failure_code is not None:
-                rows.append(
-                    translate_failure(outcome.failure_code, t)
-                    + (f" ({outcome.failure_code.value})" if outcome.reason else "")
-                )
-            return "\n".join(rows)
-
-        def on_select(_event=None) -> None:
-            selection = table.selection()
-            if not selection:
-                return
-            outcome = self.summary.outcomes[int(selection[0])]
-            detail_label.configure(text=describe(outcome))
-
-        table.bind("<<TreeviewSelect>>", on_select)
+        table.bind("<<TreeviewSelect>>", self._refresh_details_actions)
+        table.bind("<Double-1>", self._on_details_double_click)
+        table.bind("<Button-3>", self._on_details_right_click)
+        table.bind("<Control-c>", self._on_details_copy_names)
         window.protocol("WM_DELETE_WINDOW", self._close_details)
+        self._refresh_details_actions()
+
+    def _build_details_actions(self, window: tk.Toplevel) -> None:
+        """The pane under the list: one file's details, and what can be done.
+
+        The details are a disabled ``Text`` rather than a label. A label cannot
+        be selected, so the name and the reason of a file that failed could be
+        read but never copied out of the window; a disabled ``Text`` still
+        answers to the mouse and to Ctrl+C. The buttons repeat the menu for the
+        actions nobody thinks to right-click for.
+        """
+        t = self.translate
+        # The frame grows with the window as well as the list above it, so a
+        # description that runs past the pane is a scroll away, not a hidden one.
+        box = ttk.LabelFrame(window, padding=10)
+        box.pack(fill="both", expand=True, side="bottom")
+
+        hint = ttk.Label(box, wraplength=820, justify="left", foreground="#555555")
+        hint.configure(text=t("select_row_hint"))
+        hint.pack(fill="x")
+
+        text = tk.Text(box, height=7, wrap="word", relief="solid", borderwidth=1)
+        text.pack(fill="both", expand=True, pady=(6, 8))
+        self.detail_text = text
+
+        opening = ttk.Frame(box)
+        opening.pack(fill="x")
+        self.open_file_button = ttk.Button(opening, command=self.open_selected_file)
+        self.open_file_button.configure(text=t("open_original"))
+        self.open_file_button.pack(side="left")
+        self.open_copy_button = ttk.Button(opening, command=self.open_selected_copy)
+        self.open_copy_button.configure(text=t("open_copy"))
+        self.open_copy_button.pack(side="left", padx=6)
+        self.reveal_button = ttk.Button(opening, command=self.reveal_selected_file)
+        self.reveal_button.configure(text=t("show_in_folder"))
+        self.reveal_button.pack(side="left")
+
+        copying = ttk.Frame(box)
+        copying.pack(fill="x", pady=(6, 0))
+        self.copy_name_button = ttk.Button(copying, command=self.copy_selected_names)
+        self.copy_name_button.configure(text=t("copy_name"))
+        self.copy_name_button.pack(side="left")
+        self.copy_path_button = ttk.Button(copying, command=self.copy_selected_paths)
+        self.copy_path_button.configure(text=t("copy_path"))
+        self.copy_path_button.pack(side="left", padx=6)
+        self.copy_details_button = ttk.Button(copying, command=self.copy_details)
+        self.copy_details_button.configure(text=t("copy_details"))
+        self.copy_details_button.pack(side="left")
+        self.close_button = ttk.Button(copying, command=self._close_details)
+        self.close_button.configure(text=t("close"))
+        self.close_button.pack(side="right")
+
+        menu = tk.Menu(window, tearoff=False)
+        self.details_menu = menu
+        menu.add_command(label=t("open_original"), command=self.open_selected_file)
+        menu.add_command(label=t("open_copy"), command=self.open_selected_copy)
+        menu.add_command(label=t("show_in_folder"), command=self.reveal_selected_file)
+        menu.add_separator()
+        menu.add_command(label=t("copy_name"), command=self.copy_selected_names)
+        menu.add_command(label=t("copy_path"), command=self.copy_selected_paths)
+        menu.add_command(label=t("copy_details"), command=self.copy_details)
+
+    # -- what the pane is looking at
+
+    def _outcome_for(self, iid: str) -> FileOutcome | None:
+        if self.summary is None:
+            return None
+        try:
+            return self.summary.outcomes[int(iid)]
+        except (ValueError, IndexError):
+            return None
+
+    def _selected_outcomes(self) -> list[FileOutcome]:
+        table = self.details_table
+        if table is None or not table.winfo_exists():
+            return []
+        found = []
+        for iid in table.selection():
+            outcome = self._outcome_for(iid)
+            if outcome is not None:
+                found.append(outcome)
+        return found
+
+    def _focused_outcome(self) -> FileOutcome | None:
+        """The row an opening acts on: the focused one, else the first selected.
+
+        Opening is an act on one file - a dozen selected rows must not open a
+        dozen windows. Copying is the one that takes the whole selection.
+        """
+        table = self.details_table
+        if table is None or not table.winfo_exists():
+            return None
+        iid = table.focus() or next(iter(table.selection()), "")
+        return self._outcome_for(iid) if iid else None
+
+    def detail_contents(self) -> str:
+        """What the pane shows, without the newline Tk keeps at the end."""
+        box = self.detail_text
+        if box is None or not box.winfo_exists():
+            return ""
+        return box.get("1.0", "end-1c")
+
+    def _set_detail_text(self, text: str) -> None:
+        box = self.detail_text
+        if box is None or not box.winfo_exists():
+            return
+        box.configure(state="normal")
+        box.delete("1.0", tk.END)
+        box.insert("1.0", text)
+        box.configure(state="disabled")
+
+    def _describe_outcome(self, outcome: FileOutcome) -> str:
+        """Everything known about one file, as text that can be copied out.
+
+        The file leads and the reason follows it, because this is what a support
+        request pastes first and what a person reads first - the run of fields
+        under them is mostly dashes when a file failed early.
+        """
+        t = self.translate
+        rows = [
+            f"{t('field_file')}: {outcome.source_path.name}",
+            f"{t('field_path')}: {outcome.source_path}",
+        ]
+        if outcome.failure_code is not None:
+            rows.append(
+                f"{t('column_reason')}: "
+                + translate_failure(outcome.failure_code, t)
+                + (f" ({outcome.failure_code.value})" if outcome.reason else "")
+            )
+        rows += [
+            f"{t('field_parser')}: {outcome.parser_id or '-'}",
+            f"{t('field_source_type')}: {outcome.source_type or '-'}",
+            f"{t('field_model')}: {outcome.document_model or '-'}",
+            f"{t('field_generated')}: "
+            f"{t('yes') if outcome.generated else t('no')}",
+            f"{t('field_access_key')}: {outcome.access_key or '-'}",
+            f"{t('field_nf_number')}: {outcome.nf_number or '-'}",
+            f"{t('field_date')}: {outcome.emission_date or '-'}",
+            f"{t('field_value')}: {outcome.total_value or '-'}",
+            f"{t('name_source_label')}: {describe_name_source(outcome.name_source, t)}",
+            f"{t('field_issuer')}: {outcome.issuer or '-'}",
+            f"{t('field_recipient')}: {outcome.recipient or '-'}",
+            f"{t('field_destination')}: {outcome.destination_path or '-'}",
+            f"{t('field_duration')}: {t('seconds', value=outcome.duration_seconds)}",
+        ]
+        if outcome.warnings:
+            rows.append(t("field_warnings") + ": " + "; ".join(outcome.warnings))
+        return "\n".join(rows)
+
+    def _refresh_details_actions(self, _event=None) -> None:
+        """Show the selection's details and fit the buttons to it."""
+        table = self.details_table
+        if table is None or not table.winfo_exists():
+            return
+        outcomes = self._selected_outcomes()
+        focused = self._focused_outcome()
+        self._set_detail_text("\n\n".join(self._describe_outcome(o) for o in outcomes))
+        for button in (
+            self.open_file_button,
+            self.reveal_button,
+            self.copy_name_button,
+            self.copy_path_button,
+            self.copy_details_button,
+        ):
+            button.state(["!disabled"] if outcomes else ["disabled"])
+        written = focused.destination_path if focused is not None else None
+        has_copy = written is not None and written.exists()
+        self.open_copy_button.state(["!disabled"] if has_copy else ["disabled"])
+
+    # -- the actions
+
+    def open_selected_file(self) -> None:
+        """Open the original of the selected row: the file that failed."""
+        outcome = self._focused_outcome()
+        if outcome is not None:
+            self._hand_to_desktop(outcome.source_path, reveal=False)
+
+    def open_selected_copy(self) -> None:
+        """Open the copy this run wrote, when the row has one."""
+        outcome = self._focused_outcome()
+        if outcome is not None and outcome.destination_path is not None:
+            self._hand_to_desktop(outcome.destination_path, reveal=False)
+
+    def reveal_selected_file(self) -> None:
+        """Show the selected row's file in its folder."""
+        outcome = self._focused_outcome()
+        if outcome is not None:
+            self._hand_to_desktop(outcome.source_path, reveal=True)
+
+    def copy_selected_names(self) -> None:
+        """Put the selected files' names on the clipboard, one per line."""
+        self._copy_text("\n".join(o.source_path.name for o in self._selected_outcomes()))
+
+    def copy_selected_paths(self) -> None:
+        self._copy_text("\n".join(str(o.source_path) for o in self._selected_outcomes()))
+
+    def copy_details(self) -> None:
+        self._copy_text(self.detail_contents())
+
+    def _copy_text(self, text: str) -> None:
+        if not text:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+
+    def _hand_to_desktop(self, path: Path, *, reveal: bool) -> None:
+        """Let the desktop open a path, saying so when it cannot.
+
+        A file the batch read may be gone by the time it is clicked, while a
+        folder that is merely shown is still worth showing then.
+        """
+        if not reveal and not path.exists():
+            messagebox.showwarning(
+                self.translate("error_title"),
+                self.translate("file_missing", path=path),
+            )
+            return
+        try:
+            if reveal:
+                reveal_path(path)
+            else:
+                open_path(path)
+        except OSError as exc:
+            messagebox.showerror(
+                self.translate("error_title"),
+                self.translate("file_open_failed", path=path, error=exc),
+            )
+
+    # -- the mouse
+
+    def _select_under_pointer(self, event) -> bool:
+        """Make the row under the pointer the one the actions act on."""
+        table = self.details_table
+        if table is None:
+            return False
+        row = table.identify_row(event.y)
+        if not row:
+            return False
+        if row not in table.selection():
+            table.selection_set(row)
+        table.focus(row)
+        self._refresh_details_actions()
+        return True
+
+    def _on_details_right_click(self, event) -> None:
+        """Right-click: pick the row under the pointer, then offer the menu."""
+        table = self.details_table
+        if table is None:
+            return
+        self._select_under_pointer(event)
+        if not table.selection() or self.details_menu is None:
+            return
+        try:
+            self.details_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.details_menu.grab_release()
+
+    def _on_details_double_click(self, event) -> None:
+        """Double-clicking a row opens the file it names."""
+        if self._select_under_pointer(event):
+            self.open_selected_file()
+
+    def _on_details_copy_names(self, _event=None) -> str:
+        """Ctrl+C on the list copies the names; a table cannot do it itself."""
+        self.copy_selected_names()
+        return "break"
 
     def _close_details(self) -> None:
         if self.details_window is not None and self.details_window.winfo_exists():
             self.details_window.destroy()
         self.details_window = None
+        self.details_table = None
+        self.detail_text = None
+        self.details_menu = None
 
     def _on_close(self) -> None:
         """Closing mid-run is allowed; a batch stops at the next file.

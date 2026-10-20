@@ -365,11 +365,321 @@ def test_the_details_pane_shows_both_names_and_the_choice(window, tmp_path):
     window.root.update()
     window.details_table.selection_set("0")
     window.root.update()
-    text = window.detail_label.cget("text")
+    text = window.detail_contents()
 
     assert "Recipient — Outgoing Note" in text, text
     assert "INDUSTRIA EXEMPLO LTDA" in text, "both names are shown"
     assert "COMERCIO EXEMPLO LTDA" in text
+
+
+# --------------------------------------------------- acting on a failed file
+#
+# A file that failed has to be reachable from the window that names it: opened,
+# found in its folder, its name copied into a message. Reading about it is not
+# enough, and neither is a pane that cannot be selected or copied.
+
+
+@pytest.fixture
+def clipboard(window, monkeypatch):
+    """Records what would be copied, so a test run never takes the real clipboard."""
+    written: list[str] = []
+    monkeypatch.setattr(window.root, "clipboard_clear", lambda: written.clear())
+    monkeypatch.setattr(window.root, "clipboard_append", written.append)
+    return written
+
+
+def failing_batch(window, tmp_path, names):
+    """Run the window over files that cannot be read, so every row fails."""
+    window.input_kind_buttons[InputKind.PDF].invoke()
+    sources = []
+    for name in names:
+        path = tmp_path / "in" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"not a pdf")
+        sources.append(path)
+    window._add_sources(sources)
+    run_window_batch(window)
+    assert window.summary.errors + window.summary.skipped == len(names)
+    return sources
+
+
+def open_details(window, rows):
+    """Open the details window and select the given rows."""
+    window.show_details()
+    window.root.update()
+    window.details_table.selection_set(tuple(str(row) for row in rows))
+    window.root.update()
+
+
+def test_the_details_pane_names_the_file_and_what_went_wrong(window, tmp_path):
+    """The pane a support request is pasted from leads with the file itself."""
+    failing_batch(window, tmp_path, ["broken.pdf"])
+    open_details(window, [0])
+
+    shown = window.detail_contents()
+    assert "broken.pdf" in shown, shown
+    assert str(tmp_path / "in" / "broken.pdf") in shown, "the path comes with the name"
+    assert "PDF could not be read" in shown, shown
+
+
+def test_the_details_pane_is_read_only_text(window, tmp_path):
+    """Read-only must not mean inert.
+
+    Tk keeps the selection and the Ctrl+C handler on a disabled ``Text``, which
+    is why the pane is one; the label it replaced answered to neither.
+    """
+    failing_batch(window, tmp_path, ["broken.pdf"])
+    open_details(window, [0])
+
+    assert window.detail_text.cget("state") == "disabled", "the user cannot type here"
+    assert window.detail_contents().startswith("File: broken.pdf"), "and can read it"
+
+
+def test_the_reason_is_not_below_the_run_of_empty_fields(window, tmp_path):
+    """A file that failed early is mostly dashes; the reason is what is wanted."""
+    failing_batch(window, tmp_path, ["broken.pdf"])
+    open_details(window, [0])
+
+    head = "\n".join(window.detail_contents().splitlines()[:4])
+
+    assert "PDF could not be read" in head, head
+
+
+def test_copying_the_details_puts_the_file_and_the_reason_on_the_clipboard(
+    window, tmp_path, clipboard
+):
+    failing_batch(window, tmp_path, ["broken.pdf"])
+    open_details(window, [0])
+
+    window.copy_details()
+
+    assert len(clipboard) == 1, "one paste, not one per line"
+    assert "broken.pdf" in clipboard[0]
+    assert "PDF could not be read" in clipboard[0]
+
+
+def test_every_selected_failure_can_be_copied_at_once(window, tmp_path, clipboard):
+    """Copying the names is how a batch of failures is handed to someone else."""
+    failing_batch(window, tmp_path, ["first.pdf", "second.pdf"])
+    open_details(window, [0, 1])
+
+    window.copy_selected_names()
+    assert clipboard[-1].splitlines() == ["first.pdf", "second.pdf"]
+
+    window.copy_selected_paths()
+    assert clipboard[-1].splitlines() == [
+        str(tmp_path / "in" / "first.pdf"),
+        str(tmp_path / "in" / "second.pdf"),
+    ]
+
+
+def test_the_pane_shows_every_selected_failure_together(window, tmp_path):
+    failing_batch(window, tmp_path, ["first.pdf", "second.pdf"])
+    open_details(window, [0, 1])
+
+    shown = window.detail_contents()
+    assert "first.pdf" in shown and "second.pdf" in shown, shown
+
+
+def test_nothing_selected_means_nothing_to_act_on(window, tmp_path, clipboard):
+    failing_batch(window, tmp_path, ["broken.pdf"])
+    open_details(window, [])
+
+    assert window.detail_contents() == ""
+    assert window.detail_text.cget("state") == "disabled"
+    for button in (
+        window.open_file_button,
+        window.open_copy_button,
+        window.reveal_button,
+        window.copy_name_button,
+        window.copy_path_button,
+        window.copy_details_button,
+    ):
+        assert "disabled" in button.state(), button.cget("text")
+    window.copy_details()
+    window.copy_selected_names()
+    assert clipboard == [], "an empty copy is not put on the clipboard"
+
+
+def test_the_details_pane_opens_the_file_that_failed(window, tmp_path, monkeypatch):
+    opened = []
+    monkeypatch.setattr(app_window, "open_path", opened.append)
+    failing_batch(window, tmp_path, ["broken.pdf"])
+    open_details(window, [0])
+
+    window.open_selected_file()
+
+    assert opened == [tmp_path / "in" / "broken.pdf"]
+
+
+def test_the_details_pane_shows_the_file_where_it_lives(window, tmp_path, monkeypatch):
+    revealed = []
+    monkeypatch.setattr(app_window, "reveal_path", revealed.append)
+    failing_batch(window, tmp_path, ["broken.pdf"])
+    open_details(window, [0])
+
+    window.reveal_selected_file()
+
+    assert revealed == [tmp_path / "in" / "broken.pdf"]
+
+
+def test_opening_acts_on_one_file_even_when_several_are_selected(
+    window, tmp_path, monkeypatch
+):
+    """Copying takes the whole selection; opening must not open a dozen windows."""
+    opened = []
+    monkeypatch.setattr(app_window, "open_path", opened.append)
+    failing_batch(window, tmp_path, ["first.pdf", "second.pdf"])
+    open_details(window, [0, 1])
+
+    window.details_table.focus("1")
+    window.root.update()
+    window.open_selected_file()
+
+    assert opened == [tmp_path / "in" / "second.pdf"], opened
+
+
+def test_a_file_that_left_is_reported_instead_of_opened(window, tmp_path, monkeypatch):
+    """A batch can be looked at later, when the file has already moved."""
+    opened = []
+    warned = []
+    monkeypatch.setattr(app_window, "open_path", opened.append)
+    monkeypatch.setattr(
+        app_window.messagebox, "showwarning", lambda *args, **kwargs: warned.append(args)
+    )
+    failing_batch(window, tmp_path, ["broken.pdf"])
+    open_details(window, [0])
+
+    (tmp_path / "in" / "broken.pdf").unlink()
+    window.open_selected_file()
+
+    assert opened == [], "there is nothing left to open"
+    assert warned, "the user has to be told, not left with a button that does nothing"
+    assert str(tmp_path / "in" / "broken.pdf") in warned[0][1]
+
+
+def test_a_desktop_that_refuses_to_open_is_reported(window, tmp_path, monkeypatch):
+    def refuse(_path):
+        raise OSError("no handler for that kind")
+
+    errors = []
+    monkeypatch.setattr(app_window, "open_path", refuse)
+    monkeypatch.setattr(
+        app_window.messagebox, "showerror", lambda *args, **kwargs: errors.append(args)
+    )
+    failing_batch(window, tmp_path, ["broken.pdf"])
+    open_details(window, [0])
+
+    window.open_selected_file()
+
+    assert errors, "a refused open must not look like nothing happened"
+    assert "no handler for that kind" in errors[0][1]
+
+
+def test_opening_the_copy_is_offered_only_when_the_run_wrote_one(
+    window, tmp_path, monkeypatch
+):
+    """A failed row has no copy; a renamed row does, and it is the useful one."""
+    opened = []
+    monkeypatch.setattr(app_window, "open_path", opened.append)
+
+    source = tmp_path / "in" / "nota.pdf"
+    write_danfe(source)
+    broken = tmp_path / "in" / "broken.pdf"
+    broken.write_bytes(b"not a pdf")
+    window.input_kind_buttons[InputKind.PDF].invoke()
+    window._add_sources([broken, source])
+    run_window_batch(window)
+
+    outcomes = window.summary.outcomes
+    failed = next(i for i, o in enumerate(outcomes) if not o.succeeded)
+    renamed = next(i for i, o in enumerate(outcomes) if o.succeeded)
+    assert outcomes[renamed].destination_path is not None
+
+    open_details(window, [failed])
+    assert "disabled" in window.open_copy_button.state(), "there is no copy to open"
+
+    open_details(window, [renamed])
+    assert "disabled" not in window.open_copy_button.state()
+    window.open_selected_copy()
+
+    assert opened == [outcomes[renamed].destination_path]
+
+
+def test_the_details_actions_speak_the_chosen_language(window, tmp_path):
+    """Buttons and menu are rebuilt on a language change, like the rest."""
+    failing_batch(window, tmp_path, ["broken.pdf"])
+    open_details(window, [0])
+
+    assert window.open_file_button.cget("text") == "Open original file"
+    assert window.copy_name_button.cget("text") == "Copy name"
+    assert window.close_button.cget("text") == "Close"
+
+    window.translate.set_language("pt")
+    window.root.update()
+
+    assert window.open_file_button.cget("text") == "Abrir arquivo original"
+    assert window.copy_name_button.cget("text") == "Copiar nome"
+    assert window.close_button.cget("text") == "Fechar"
+
+
+def test_the_context_menu_offers_what_the_buttons_do(window, tmp_path):
+    """Right-clicking a row is the shortest way to the same actions."""
+    failing_batch(window, tmp_path, ["broken.pdf"])
+    open_details(window, [0])
+
+    labels = [
+        window.details_menu.entrycget(index, "label")
+        for index in range(window.details_menu.index("end") + 1)
+        if window.details_menu.type(index) == "command"
+    ]
+
+    assert labels == [
+        "Open original file",
+        "Open renamed copy",
+        "Show in folder",
+        "Copy name",
+        "Copy full path",
+        "Copy details",
+    ]
+
+
+def test_revealing_names_the_file_for_the_file_manager(monkeypatch, tmp_path):
+    """Explorer takes the switch and the path as one argument.
+
+    Splitting them loses a path that contains spaces, which is most of them.
+    """
+    launched = []
+    monkeypatch.setattr(app_window.subprocess, "Popen", launched.append)
+    monkeypatch.setattr(app_window.sys, "platform", "win32")
+    target = tmp_path / "a note with spaces.pdf"
+    target.write_bytes(b"%PDF")
+
+    app_window.reveal_path(target)
+
+    assert launched == [["explorer", f"/select,{target}"]]
+
+
+def test_revealing_a_file_that_left_opens_its_folder(monkeypatch, tmp_path):
+    """The file is gone; the folder it was read from is still worth showing."""
+    launched = []
+    monkeypatch.setattr(app_window.subprocess, "Popen", launched.append)
+    monkeypatch.setattr(app_window.sys, "platform", "win32")
+
+    app_window.reveal_path(tmp_path / "gone.pdf")
+
+    assert launched == [["explorer", str(tmp_path)]]
+
+
+def test_opening_hands_the_file_to_the_desktop(monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(app_window.os, "startfile", started.append, raising=False)
+    monkeypatch.setattr(app_window.sys, "platform", "win32")
+    target = tmp_path / "broken.pdf"
+
+    app_window.open_path(target)
+
+    assert started == [target]
 
 
 # --------------------------------------------------------------- drag and drop
